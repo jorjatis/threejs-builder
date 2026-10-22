@@ -86,7 +86,20 @@ export function analyzePerformance(
     })
   }
 
-  if (stats.extensions.includes('EXT_meshopt_compression')) {
+  const hasMeshopt = stats.extensions.includes('EXT_meshopt_compression')
+  const hasDraco = stats.extensions.includes('KHR_draco_mesh_compression')
+
+  // Meshopt y Draco son incompatibles: un solo aviso según lo que el archivo use de verdad.
+  if (hasDraco) {
+    alerts.push({
+      id: 'ext-draco',
+      severity: 'info',
+      title: 'Archivo con Draco',
+      message:
+        'El modelo ya viene con Draco. El visor del editor lo decodifica; al publicar usa DRACOLoader.',
+      confirmed: true,
+    })
+  } else if (hasMeshopt) {
     alerts.push({
       id: 'ext-meshopt',
       severity: 'info',
@@ -104,17 +117,6 @@ export function analyzePerformance(
         'Ve a Optimización → Compresión → «Compresión Meshopt». Reduce el peso del GLB. Luego el módulo exportado / tu GLTFLoader necesitará MeshoptDecoder.',
       confirmed: false,
       suggestedOps: ['meshopt'],
-    })
-  }
-
-  if (stats.extensions.includes('KHR_draco_mesh_compression')) {
-    alerts.push({
-      id: 'ext-draco',
-      severity: 'info',
-      title: 'Archivo con Draco',
-      message:
-        'El modelo ya viene con Draco. El visor del editor lo decodifica; al publicar usa DRACOLoader.',
-      confirmed: true,
     })
   }
 

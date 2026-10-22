@@ -1,4 +1,4 @@
-import { FolderOpen, Save, Download, Undo2, Redo2, Upload } from 'lucide-react'
+import { FolderOpen, Save, Download, Upload } from 'lucide-react'
 import { useRef } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { saveCurrentProject } from '../projects/projectActions'
@@ -10,10 +10,6 @@ export function TopBar() {
   const saving = useAppStore((s) => s.saveState.saving)
   const projectId = useAppStore((s) => s.projectId)
   const importFiles = useAppStore((s) => s.importFiles)
-  const undo = useAppStore((s) => s.undo)
-  const redo = useAppStore((s) => s.redo)
-  const historyIndex = useAppStore((s) => s.historyIndex)
-  const historyLen = useAppStore((s) => s.history.length)
   const setActivePanel = useAppStore((s) => s.setActivePanel)
   const setShowProjectsList = useAppStore((s) => s.setShowProjectsList)
   const hasModel = useAppStore((s) => s.hasModel)
@@ -39,24 +35,6 @@ export function TopBar() {
       </div>
       <div className="topbar__spacer" />
       <div className="topbar__actions">
-        <button
-          type="button"
-          className="btn btn--icon"
-          title="Deshacer"
-          disabled={historyIndex <= 0}
-          onClick={() => void undo()}
-        >
-          <Undo2 size={15} />
-        </button>
-        <button
-          type="button"
-          className="btn btn--icon"
-          title="Rehacer"
-          disabled={historyIndex >= historyLen - 1}
-          onClick={() => void redo()}
-        >
-          <Redo2 size={15} />
-        </button>
         <button
           type="button"
           className="btn"
@@ -89,11 +67,12 @@ export function TopBar() {
         </button>
         <button
           type="button"
-          className="btn btn--icon"
+          className="btn"
           title="Proyectos guardados"
           onClick={() => setShowProjectsList(true)}
         >
-          <FolderOpen size={15} />
+          <FolderOpen size={14} />
+          Proyectos
         </button>
         <button
           type="button"

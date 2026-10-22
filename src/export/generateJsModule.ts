@@ -1,10 +1,32 @@
 import type { SceneConfig, JsExportMode } from '../types'
 
+/** Versión de three alineada con el editor (CDN / snippets). */
+const THREE_CDN = '0.180.0'
+
+export interface IntegrationSnippets {
+  /** Módulo ESM completo (con import/export). */
+  jsWithImports: string
+  /** Mismo módulo sin import/export (para scripts.js). */
+  jsWithoutImports: string
+  /** Trozo para main.js (desarrollo con imports). */
+  mainWithImports: string
+  /** Trozo para producción (todo tirado, sin export). */
+  mainInlined: string
+  /** Tags &lt;script&gt; CDN + scripts.js. */
+  cdnScripts: string
+}
+
 export interface GeneratedModule {
   fileName: string
+  /** ESM con imports (archivo principal). */
   code: string
+  /** Sin imports (archivo .inline.js). */
+  inlineCode: string
+  inlineFileName: string
   dependencies: string[]
+  /** Informe de integración en Markdown (secciones claras). */
   instructions: string
+  snippets: IntegrationSnippets
 }
 
 /** Genera módulo JS tipado según modo de integración y configuración de escena. */
@@ -20,7 +42,6 @@ export function generateJsModule(
 }
 
 function serializeConfig(config: SceneConfig): string {
-  // Solo opciones relevantes activas
   const slim = {
     camera: {
       position: config.camera.position,
@@ -65,49 +86,21 @@ function serializeConfig(config: SceneConfig): string {
       rotation: config.modelRotation,
     },
     editorial: {
-      altText: config.editorial.altTextEnabled ? config.editorial.altText : undefined,
-      credits: config.editorial.creditsEnabled ? config.editorial.credits : undefined,
-      title: config.editorial.titleEnabled ? config.editorial.title : undefined,
+      textAboveParagraphs: config.editorial.textAboveEnabled
+        ? config.editorial.textAboveParagraphs
+        : 0,
+      textBelowParagraphs: config.editorial.textBelowEnabled
+        ? config.editorial.textBelowParagraphs
+        : 0,
+      rotateHelpEnabled: config.editorial.rotateHelpEnabled,
+      lazyLoad: config.editorial.lazyLoad,
     },
   }
   return JSON.stringify(slim, null, 2)
 }
 
-function generateIntegrateModule(config: SceneConfig, modelFileName: string): GeneratedModule {
-  const needsControls =
-    config.interaction.enableRotate ||
-    config.interaction.enableZoom ||
-    config.interaction.enablePan ||
-    config.autoRotate.enabled
-
-  const code = `/**
- * Módulo de integración para escena Three.js existente.
- * No crea renderer ni bucle rAF propios: usa los del anfitrión.
- *
- * Dependencias del proyecto anfitrión:
- * - three
- * - three/addons/loaders/GLTFLoader.js
-${needsControls ? ' * - three/addons/controls/OrbitControls.js (si aplicas controles aquí)\n' : ''} * - three/addons/loaders/DRACOLoader.js (si el GLB usa Draco)
- * - three/addons/libs/meshopt_decoder.module.js (si usa Meshopt)
- */
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-${needsControls ? "import { OrbitControls } from 'three/addons/controls/OrbitControls.js';\n" : ''}
-export const MODEL_URL = './${modelFileName}';
-
-export const defaultConfig = ${serializeConfig(config)};
-
-/**
- * @param {object} opts
- * @param {THREE.Scene} opts.scene
- * @param {THREE.Camera} [opts.camera]
- * @param {THREE.WebGLRenderer} [opts.renderer]
- * @param {HTMLElement} [opts.domElement] - necesario si se crean OrbitControls
- * @param {object} [opts.config]
- * @param {string} [opts.modelUrl]
- * @returns {Promise<{ group: THREE.Group, mixer: THREE.AnimationMixer|null, controls: object|null, dispose: Function, update: Function }>}
- */
-export async function createModelScene({
+function buildCreateModelSceneFn(needsControls: boolean): string {
+  return `async function createModelScene({
   scene,
   camera,
   renderer,
@@ -149,7 +142,6 @@ export async function createModelScene({
     for (const clip of gltf.animations) mixer.clipAction(clip).play();
   }
 
-  // Luces de editor (opcionales; no tocan luces previas de la escena)
   const lightGroup = new THREE.Group();
   lightGroup.name = 'NarrativeLights';
   for (const l of config.lights || []) {
@@ -167,7 +159,9 @@ export async function createModelScene({
   }
   group.add(lightGroup);
 
-${needsControls ? `
+${
+  needsControls
+    ? `
   let controls = null;
   if (camera && domElement) {
     controls = new OrbitControls(camera, domElement);
@@ -202,7 +196,9 @@ ${needsControls ? `
     controls.autoRotate = i.reducedMotion ? false : !!ar.enabled;
     controls.autoRotateSpeed = (ar.speed || 1) * (ar.direction || 1) * 2;
   }
-` : '  const controls = null;\n'}
+`
+    : '  const controls = null;\n'
+}
 
   function update(deltaSeconds) {
     if (mixer) mixer.update(deltaSeconds);
@@ -229,48 +225,198 @@ ${needsControls ? `
   }
 
   return { group, mixer, controls, dispose, update, config };
+}`
 }
+
+function fence(lang: string, body: string): string {
+  return '```' + lang + '\n' + body.trimEnd() + '\n```'
+}
+
+function buildIntegrationGuide(
+  snippets: IntegrationSnippets,
+  files: { withImports: string; withoutImports: string; modulesPath: string },
+): string {
+  return `# Guía de integración
+
+Copia cada bloque según el entorno. Los archivos JS del paquete son:
+
+- \`${files.withImports}\` — con imports (desarrollo / módulos)
+- \`${files.withoutImports}\` — sin imports (producción / scripts.js)
+
+---
+
+## 1. JS con imports
+
+Archivo: \`${files.withImports}\`  
+Uso: arrástralo a \`${files.modulesPath}\`.
+
+${fence('js', snippets.jsWithImports)}
+
+---
+
+## 2. JS sin imports
+
+Archivo: \`${files.withoutImports}\`  
+Uso: pégalo dentro de \`scripts.js\` (o cárgalo tras los CDN). Requiere \`THREE\` global y \`GLTFLoader\` / \`OrbitControls\` en global o en \`THREE.*\`.
+
+${fence('js', snippets.jsWithoutImports)}
+
+---
+
+## 3. Trozo para main.js (con imports)
+
+En desarrollo, junto al resto de módulos y dentro de \`initAll()\`:
+
+${fence('js', snippets.mainWithImports)}
+
+---
+
+## 4. Trozo para producción (todo tirado)
+
+Sin \`import\` / \`export\`. El código del módulo ya va dentro de \`scripts.js\`:
+
+${fence('js', snippets.mainInlined)}
+
+---
+
+## 5. Scripts CDN
+
+En el HTML de producción, **antes** de \`scripts.js\`:
+
+${fence('html', snippets.cdnScripts)}
+`
+}
+
+function generateIntegrateModule(config: SceneConfig, modelFileName: string): GeneratedModule {
+  const needsControls =
+    config.interaction.enableRotate ||
+    config.interaction.enableZoom ||
+    config.interaction.enablePan ||
+    config.autoRotate.enabled
+
+  const configJson = serializeConfig(config)
+  const fnBody = buildCreateModelSceneFn(needsControls)
+
+  const jsWithImports = `/**
+ * Módulo de integración para escena Three.js existente.
+ * No crea renderer ni bucle rAF propios: usa los del anfitrión.
+ *
+ * Dependencias: three, GLTFLoader${needsControls ? ', OrbitControls' : ''}
+ * (Draco / Meshopt solo si el GLB los usa).
+ */
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+${needsControls ? "import { OrbitControls } from 'three/addons/controls/OrbitControls.js';\n" : ''}
+export const MODEL_URL = './${modelFileName}';
+
+export const defaultConfig = ${configJson};
+
+/**
+ * @param {object} opts
+ * @param {THREE.Scene} opts.scene
+ * @param {THREE.Camera} [opts.camera]
+ * @param {THREE.WebGLRenderer} [opts.renderer]
+ * @param {HTMLElement} [opts.domElement]
+ * @param {object} [opts.config]
+ * @param {string} [opts.modelUrl]
+ */
+export ${fnBody}
 `
 
-  return {
-    fileName: 'createModelScene.js',
-    code,
-    dependencies: ['three', ...(needsControls ? ['OrbitControls'] : []), 'GLTFLoader'],
-    instructions: `En tu main.js:
+  const jsWithoutImports = `/**
+ * createModelScene — sin import/export (para scripts.js).
+ * Requiere THREE en global (CDN).
+ * GLTFLoader${needsControls ? ' y OrbitControls' : ''}: THREE.GLTFLoader / window.GLTFLoader${needsControls ? ' (igual OrbitControls)' : ''}.
+ */
+var MODEL_URL = './${modelFileName}';
+var defaultConfig = ${configJson};
+var GLTFLoader = (typeof THREE !== 'undefined' && THREE.GLTFLoader) || window.GLTFLoader;
+${needsControls ? "var OrbitControls = (typeof THREE !== 'undefined' && THREE.OrbitControls) || window.OrbitControls;\n" : ''}
+${fnBody}
 
-import { createModelScene } from './createModelScene.js';
+window.createModelScene = createModelScene;
+window.MODEL_URL = MODEL_URL;
+window.defaultConfig = defaultConfig;
+`
 
-const handle = await createModelScene({
-  scene,
-  camera,
-  renderer,
-  domElement: renderer.domElement,
-});
+  const mainWithImports = `// NOTE: Modules
+import { createModelScene } from './modules/createModelScene';
 
-// Dentro de tu bucle existente:
-function animate(t) {
-  requestAnimationFrame(animate);
-  handle.update(clock.getDelta());
-  renderer.render(scene, camera);
+export function initAll() {
+  document.body.classList.add('is-loaded');
+  // ...resto de inits...
+
+  void createModelScene({
+    scene,
+    camera,
+    renderer,
+    domElement: renderer.domElement,
+  }).then((handle) => {
+    // En tu rAF: handle.update(clock.getDelta());
+    // Al desmontar: handle.dispose();
+  });
 }
 
-// Al desmontar:
-handle.dispose();
-`,
+window.addEventListener('load', initAll);`
+
+  const mainInlined = `// Producción: todo tirado en scripts.js (sin import / export)
+function initAll() {
+  document.body.classList.add('is-loaded');
+  // ...resto de inits...
+
+  void createModelScene({
+    scene,
+    camera,
+    renderer,
+    domElement: renderer.domElement,
+  });
+}
+
+initAll();`
+
+  const cdnScripts = `<!-- Librerías por CDN, luego tu código en línea -->
+<script src="https://cdn.jsdelivr.net/npm/three@${THREE_CDN}/build/three.min.js"></script>
+<!-- Si pegas createModelScene.inline.js a mano, necesitas también GLTFLoader${needsControls ? ' (+ OrbitControls)' : ''}
+     como global. Con webpack suelen ir ya dentro de scripts.js. -->
+<script src="scripts.js"></script>`
+
+  const snippets: IntegrationSnippets = {
+    jsWithImports,
+    jsWithoutImports,
+    mainWithImports,
+    mainInlined,
+    cdnScripts,
+  }
+
+  const fileName = 'createModelScene.js'
+  const inlineFileName = 'createModelScene.inline.js'
+  return {
+    fileName,
+    code: jsWithImports,
+    inlineCode: jsWithoutImports,
+    inlineFileName,
+    dependencies: ['three', ...(needsControls ? ['OrbitControls'] : []), 'GLTFLoader'],
+    instructions: buildIntegrationGuide(snippets, {
+      withImports: fileName,
+      withoutImports: inlineFileName,
+      modulesPath: 'src/js/modules/',
+    }),
+    snippets,
   }
 }
 
 function generateStandaloneModule(config: SceneConfig, modelFileName: string): GeneratedModule {
-  const code = `/**
+  const configJson = serializeConfig(config)
+
+  const jsWithImports = `/**
  * Visor autónomo: crea renderer, cámara, luces y controles.
- * Inserta el canvas en un contenedor HTML dado.
  */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 export const MODEL_URL = './${modelFileName}';
-export const defaultConfig = ${serializeConfig(config)};
+export const defaultConfig = ${configJson};
 
 /**
  * @param {HTMLElement} container
@@ -281,7 +427,6 @@ export function createModelViewer(container, userConfig = {}) {
   const config = { ...defaultConfig, ...userConfig, camera: { ...defaultConfig.camera, ...(userConfig.camera||{}) }, interaction: { ...defaultConfig.interaction, ...(userConfig.interaction||{}) }, autoRotate: { ...defaultConfig.autoRotate, ...(userConfig.autoRotate||{}) }, environment: { ...defaultConfig.environment, ...(userConfig.environment||{}) } };
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(config.environment.background || '#111');
 
   const camera = new THREE.PerspectiveCamera(
     config.camera.fov || 45,
@@ -294,6 +439,28 @@ export function createModelViewer(container, userConfig = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, config.environment.maxPixelRatio || 2));
   renderer.toneMappingExposure = config.environment.exposure ?? 1;
+  {
+    const raw = config.environment.background || '#111111';
+    let hex = '#111111';
+    let alpha = 1;
+    if (raw === 'transparent' || raw === 'none') alpha = 0;
+    else if (typeof raw === 'string' && raw.startsWith('#')) {
+      const h = raw.slice(1);
+      if (h.length === 8) {
+        hex = '#' + h.slice(0, 6);
+        alpha = parseInt(h.slice(6, 8), 16) / 255;
+      } else if (h.length === 6 || h.length === 3) hex = raw.length === 4
+        ? '#' + h.split('').map((c) => c + c).join('')
+        : raw;
+    }
+    if (alpha >= 0.999) {
+      scene.background = new THREE.Color(hex);
+      renderer.setClearColor(hex, 1);
+    } else {
+      scene.background = null;
+      renderer.setClearColor(hex, alpha);
+    }
+  }
   container.appendChild(renderer.domElement);
 
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -394,19 +561,67 @@ export function createModelViewer(container, userConfig = {}) {
 }
 `
 
-  return {
-    fileName: 'createModelViewer.js',
-    code,
-    dependencies: ['three', 'GLTFLoader', 'OrbitControls'],
-    instructions: `<!-- HTML -->
-<div id="viewer" style="width:100%;height:480px;"></div>
-<script type="module">
-  import { createModelViewer } from './createModelViewer.js';
+  const jsWithoutImports = `/**
+ * createModelViewer — sin import/export (para scripts.js).
+ * Requiere THREE, GLTFLoader y OrbitControls en global.
+ */
+var GLTFLoader = (typeof THREE !== 'undefined' && THREE.GLTFLoader) || window.GLTFLoader;
+var OrbitControls = (typeof THREE !== 'undefined' && THREE.OrbitControls) || window.OrbitControls;
+
+${jsWithImports
+  .replace(/^import .+$/gm, '')
+  .replace(/^\/\*\*[\s\S]*?\*\/\s*/m, '')
+  .replace(/^export const /gm, 'var ')
+  .replace(/^export function /gm, 'function ')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim()}
+
+window.createModelViewer = createModelViewer;
+window.MODEL_URL = MODEL_URL;
+window.defaultConfig = defaultConfig;
+`
+
+  const mainWithImports = `import { createModelViewer } from './modules/createModelViewer';
+
+export function initAll() {
   const viewer = createModelViewer(document.getElementById('viewer'));
-  await viewer.ready;
-  // viewer.dispose() al desmontar
-</script>
-`,
+  void viewer.ready;
+}
+
+window.addEventListener('load', initAll);`
+
+  const mainInlined = `function initAll() {
+  const viewer = createModelViewer(document.getElementById('viewer'));
+  void viewer.ready;
+}
+
+initAll();`
+
+  const cdnScripts = `<script src="https://cdn.jsdelivr.net/npm/three@${THREE_CDN}/build/three.min.js"></script>
+<script src="scripts.js"></script>`
+
+  const snippets: IntegrationSnippets = {
+    jsWithImports,
+    jsWithoutImports,
+    mainWithImports,
+    mainInlined,
+    cdnScripts,
+  }
+
+  const fileName = 'createModelViewer.js'
+  const inlineFileName = 'createModelViewer.inline.js'
+  return {
+    fileName,
+    code: jsWithImports,
+    inlineCode: jsWithoutImports,
+    inlineFileName,
+    dependencies: ['three', 'GLTFLoader', 'OrbitControls'],
+    instructions: buildIntegrationGuide(snippets, {
+      withImports: fileName,
+      withoutImports: inlineFileName,
+      modulesPath: 'src/js/modules/',
+    }),
+    snippets,
   }
 }
 
@@ -419,25 +634,27 @@ export function generateReadme(opts: {
 }): string {
   return `# ${opts.projectName}
 
-Paquete exportado desde **threejs-builder** (editor local de modelos 3D).
+Paquete exportado desde **threejs-builder**.
 
 ## Contenido
 
 - \`${opts.modelFileName}\` — modelo glTF/GLB
-- \`${opts.module.fileName}\` — módulo JavaScript (${opts.mode})
+- \`${opts.module.fileName}\` — JS **con** imports
+- \`${opts.module.inlineFileName}\` — JS **sin** imports
+- \`INTEGRATION.md\` — guía de copiar/pegar (main, producción, CDN)
 - \`optimization-report.md\` — informe de optimización
 
 ## Dependencias
 
 ${opts.module.dependencies.map((d) => `- \`${d}\``).join('\n')}
 
-Three.js debe resolverse desde el proyecto anfitrión (no se incluye una segunda copia del renderizador).
+Three.js se resuelve desde el proyecto anfitrión o por CDN (ver \`INTEGRATION.md\` §5).
 
 ## Integración
 
-${opts.module.instructions}
+Ver **\`INTEGRATION.md\`** (bloques numerados 1–5).
 
-## Informe
+## Informe de optimización
 
 ${opts.report}
 

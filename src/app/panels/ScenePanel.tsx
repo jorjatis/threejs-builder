@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { RotateCcw, X } from 'lucide-react'
+import { Aperture, Focus, RotateCcw, WandSparkles, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import {
   Section,
@@ -331,7 +331,15 @@ export function ScenePanel() {
           </button>
         </Section>
 
-        <Collapse title="Presets" defaultOpen={false}>
+        <Collapse
+          title={
+            <>
+              <WandSparkles className="collapse__title-icon" size={14} aria-hidden />
+              Presets
+            </>
+          }
+          defaultOpen={false}
+        >
           <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
             Atajos de cámara, interacción y auto-rotación. El encuadre se adapta al modelo.
           </p>
@@ -535,119 +543,6 @@ export function ScenePanel() {
               </Field>
             </>
           )}
-          <div className="camera-actions">
-            <button
-              type="button"
-              className="btn"
-              title="Marca esta vista como la de «Restablecer cámara» en el visor"
-              disabled={!hasModel}
-              onClick={() => {
-                getViewerService().rememberCamera()
-                syncCameraFromViewer()
-                setToast(
-                  'Encuadre guardado. El botón ↺ del visor volverá a esta vista.',
-                )
-                window.setTimeout(() => {
-                  if (
-                    useAppStore.getState().toastMessage?.startsWith('Encuadre guardado')
-                  ) {
-                    useAppStore.getState().setToast(null)
-                  }
-                }, 3200)
-              }}
-            >
-              Guardar encuadre
-            </button>
-            <button
-              type="button"
-              className="btn"
-              title="Centra la cámara en el modelo (mín 0.5 / máx 3)"
-              disabled={!hasModel}
-              onClick={() => {
-                // Centra con límites por defecto; no pisa el snapshot de «Guardar encuadre»
-                getViewerService().fitCameraToModel({ resetLimits: true })
-                patchCamera({ minDistance: 0.5, maxDistance: 3 })
-                syncCameraFromViewer()
-              }}
-            >
-              Encuadrar modelo
-            </button>
-            <button
-              type="button"
-              className="btn camera-actions__reset-all"
-              title="Restablece FOV, límites, sensibilidades y vuelve al encuadre ¾ del modelo."
-              onClick={resetCameraSettings}
-            >
-              <RotateCcw size={14} aria-hidden />
-              Restablecer todo
-            </button>
-          </div>
-          <div className="switch-row">
-            <Switch
-              checked={scene.camera.enableDamping}
-              onChange={(v) => patchCamera({ enableDamping: v })}
-            />
-            <div className="switch-row__text">
-              <div className="switch-row__name">
-                Inercia / damping
-                <InfoTip text="La cámara sigue un poco el movimiento al soltar el ratón. Se desactiva automáticamente con «Movimiento reducido»." />
-              </div>
-            </div>
-          </div>
-          {scene.camera.enableDamping && (
-            <Field
-              label="Factor de inercia"
-              tip="Más alto = más arrastre al soltar. Valores bajos se sienten más directos."
-              onReset={() => resetCameraField('dampingFactor')}
-            >
-              <SliderInput
-                value={scene.camera.dampingFactor}
-                min={0.01}
-                max={0.25}
-                step={0.01}
-                onChange={(v) => patchCamera({ dampingFactor: v })}
-              />
-            </Field>
-          )}
-          <Field
-            label="Velocidad de rotación"
-            tip="Sensibilidad al orbitar con el ratón o el dedo."
-            onReset={() => resetCameraField('rotateSpeed')}
-          >
-            <SliderInput
-              value={scene.camera.rotateSpeed}
-              min={0.1}
-              max={3}
-              step={0.05}
-              onChange={(v) => patchCamera({ rotateSpeed: v })}
-            />
-          </Field>
-          <Field
-            label="Velocidad de zoom"
-            tip="Sensibilidad de la rueda o pellizco."
-            onReset={() => resetCameraField('zoomSpeed')}
-          >
-            <SliderInput
-              value={scene.camera.zoomSpeed}
-              min={0.1}
-              max={3}
-              step={0.05}
-              onChange={(v) => patchCamera({ zoomSpeed: v })}
-            />
-          </Field>
-          <Field
-            label="Velocidad de pan"
-            tip="Sensibilidad al desplazar la vista (clic derecho / dos dedos)."
-            onReset={() => resetCameraField('panSpeed')}
-          >
-            <SliderInput
-              value={scene.camera.panSpeed}
-              min={0.1}
-              max={3}
-              step={0.05}
-              onChange={(v) => patchCamera({ panSpeed: v })}
-            />
-          </Field>
           <Field
             label="Near"
             tip="Plano cercano de recorte. Si el modelo se “come” al acercarte, súbelo un poco o bájalo."
@@ -688,6 +583,57 @@ export function ScenePanel() {
               }
             />
           </Field>
+          <div className="camera-actions">
+            <button
+              type="button"
+              className="btn"
+              title="Marca esta vista como la de «Restablecer cámara» en el visor"
+              disabled={!hasModel}
+              onClick={() => {
+                getViewerService().rememberCamera()
+                syncCameraFromViewer()
+                // Marcar dirty por si sync no detectó cambio numérico (redondeo)
+                useAppStore.getState().markDirty()
+                setToast(
+                  'Encuadre guardado en el proyecto. Guarda el proyecto para conservarlo al reabrir.',
+                )
+                window.setTimeout(() => {
+                  if (
+                    useAppStore.getState().toastMessage?.startsWith('Encuadre guardado')
+                  ) {
+                    useAppStore.getState().setToast(null)
+                  }
+                }, 3200)
+              }}
+            >
+              <Aperture size={14} aria-hidden />
+              Guardar encuadre
+            </button>
+            <button
+              type="button"
+              className="btn"
+              title="Centra la cámara en el modelo (mín 0.5 / máx 3)"
+              disabled={!hasModel}
+              onClick={() => {
+                // Centra con límites por defecto; no pisa el snapshot de «Guardar encuadre»
+                getViewerService().fitCameraToModel({ resetLimits: true })
+                patchCamera({ minDistance: 0.5, maxDistance: 3 })
+                syncCameraFromViewer()
+              }}
+            >
+              <Focus size={14} aria-hidden />
+              Encuadrar modelo
+            </button>
+            <button
+              type="button"
+              className="btn camera-actions__reset-all"
+              title="Restablece FOV, límites, sensibilidades y vuelve al encuadre ¾ del modelo."
+              onClick={resetCameraSettings}
+            >
+              <RotateCcw size={14} aria-hidden />
+              Restablecer todo
+            </button>
+          </div>
         </Collapse>
 
         <Collapse title="Interacción" defaultOpen>
@@ -793,18 +739,117 @@ export function ScenePanel() {
             </div>
           </div>
 
+          {scene.interaction.enableRotate && (
+            <div className="switch-row__params switch-row__params--nested">
+              <Field
+                label="Velocidad de rotación"
+                tip="Sensibilidad al orbitar con el ratón o el dedo."
+                onReset={() => resetCameraField('rotateSpeed')}
+              >
+                <SliderInput
+                  value={scene.camera.rotateSpeed}
+                  min={0.1}
+                  max={3}
+                  step={0.05}
+                  onChange={(v) => patchCamera({ rotateSpeed: v })}
+                />
+              </Field>
+              <div className="switch-row">
+                <Switch
+                  checked={scene.camera.enableDamping}
+                  onChange={(v) => patchCamera({ enableDamping: v })}
+                />
+                <div className="switch-row__text">
+                  <div className="switch-row__name">
+                    Inercia / damping
+                    <InfoTip text="La cámara sigue un poco el movimiento al soltar el ratón. Se desactiva automáticamente con «Movimiento reducido»." />
+                  </div>
+                </div>
+              </div>
+              {scene.camera.enableDamping && (
+                <Field
+                  label="Factor de inercia"
+                  tip="Más alto = más arrastre al soltar. Valores bajos se sienten más directos."
+                  onReset={() => resetCameraField('dampingFactor')}
+                >
+                  <SliderInput
+                    value={scene.camera.dampingFactor}
+                    min={0.01}
+                    max={0.25}
+                    step={0.01}
+                    onChange={(v) => patchCamera({ dampingFactor: v })}
+                  />
+                </Field>
+              )}
+            </div>
+          )}
+
+          <div className="switch-row">
+            <Switch
+              checked={scene.interaction.enableZoom}
+              onChange={(v) =>
+                setScene({ interaction: { ...scene.interaction, enableZoom: v } })
+              }
+            />
+            <div className="switch-row__text">
+              <div className="switch-row__name">
+                Zoom
+                <InfoTip text="Acercar o alejar (cambia la distancia, no el FOV). Ratón: rueda de scroll o clic central + arrastrar. Táctil: pellizco con dos dedos." />
+              </div>
+            </div>
+          </div>
+          {scene.interaction.enableZoom && (
+            <div className="switch-row__params switch-row__params--nested">
+              <Field
+                label="Velocidad de zoom"
+                tip="Sensibilidad de la rueda o pellizco."
+                onReset={() => resetCameraField('zoomSpeed')}
+              >
+                <SliderInput
+                  value={scene.camera.zoomSpeed}
+                  min={0.1}
+                  max={3}
+                  step={0.05}
+                  onChange={(v) => patchCamera({ zoomSpeed: v })}
+                />
+              </Field>
+            </div>
+          )}
+
+          <div className="switch-row">
+            <Switch
+              checked={scene.interaction.enablePan}
+              onChange={(v) =>
+                setScene({ interaction: { ...scene.interaction, enablePan: v } })
+              }
+            />
+            <div className="switch-row__text">
+              <div className="switch-row__name">
+                Desplazamiento
+                <InfoTip text="Mueve la cámara en el plano de la vista. Ratón: clic derecho + arrastrar, o Ctrl + clic izquierdo + arrastrar. Táctil: dos dedos arrastrando." />
+              </div>
+            </div>
+          </div>
+          {scene.interaction.enablePan && (
+            <div className="switch-row__params switch-row__params--nested">
+              <Field
+                label="Velocidad de pan"
+                tip="Sensibilidad al desplazar la vista (clic derecho / dos dedos)."
+                onReset={() => resetCameraField('panSpeed')}
+              >
+                <SliderInput
+                  value={scene.camera.panSpeed}
+                  min={0.1}
+                  max={3}
+                  step={0.05}
+                  onChange={(v) => patchCamera({ panSpeed: v })}
+                />
+              </Field>
+            </div>
+          )}
+
           {(
             [
-              [
-                'enableZoom',
-                'Zoom',
-                'Acercar o alejar (cambia la distancia, no el FOV). Ratón: rueda de scroll o clic central + arrastrar. Táctil: pellizco con dos dedos.',
-              ],
-              [
-                'enablePan',
-                'Desplazamiento',
-                'Mueve la cámara en el plano de la vista. Ratón: clic derecho + arrastrar, o Ctrl + clic izquierdo + arrastrar. Táctil: dos dedos arrastrando.',
-              ],
               [
                 'touchEnabled',
                 'Táctil',
@@ -1073,9 +1118,14 @@ export function ScenePanel() {
         </Collapse>
 
         <Collapse title="Entorno">
-          <Field label="Fondo">
+          <Field
+            label="Fondo"
+            tip="Al abrir el color puedes bajar la opacidad a 0% (transparente) para que se vea el fondo de la página al publicar."
+          >
             <ColorInput
+              withAlpha
               value={scene.environment.background}
+              title="Color y opacidad de fondo"
               onChange={(hex) =>
                 setScene({
                   environment: { ...scene.environment, background: hex },

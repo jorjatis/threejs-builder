@@ -255,21 +255,24 @@ export interface ContainerConfig {
 }
 
 export interface EditorialConfig {
-  title: string
-  titleEnabled: boolean
-  lead: string
-  leadEnabled: boolean
-  textAbove: string
   textAboveEnabled: boolean
-  textBelow: string
+  /** Número de párrafos lorem encima del 3D (1–20). */
+  textAboveParagraphs: number
   textBelowEnabled: boolean
-  caption: string
-  captionEnabled: boolean
-  credits: string
-  creditsEnabled: boolean
-  altText: string
-  altTextEnabled: boolean
+  /** Número de párrafos lorem debajo del 3D (1–20). */
+  textBelowParagraphs: number
+  /** Icono «Arrastra para girar» sobre el bloque 3D. */
+  rotateHelpEnabled: boolean
+  /**
+   * Carga del embed en producción / mock:
+   * - false: desde el inicio
+   * - true: cuando el bloque entra en el viewport (lazy)
+   */
+  lazyLoad: boolean
 }
+
+/** Anchos de previsualización del mock de artículo (px o 100%). */
+export type ArticlePreviewWidth = '100%' | 1024 | 699 | 375 | 320
 
 export interface SceneConfig {
   camera: CameraConfig
@@ -320,16 +323,6 @@ export interface ExportSettings {
   includeReadme: boolean
   includeExample: boolean
   includeReport: boolean
-}
-
-export interface HistoryEntry {
-  id: string
-  label: string
-  timestamp: number
-  /** Snapshot del documento glTF Transform como ArrayBuffer GLB */
-  glbSnapshot: ArrayBuffer
-  stats: ModelStats | null
-  appliedOps: OptimizationOpId[]
 }
 
 export interface ProjectMeta {

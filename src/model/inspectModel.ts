@@ -39,17 +39,42 @@ export function inspectDocument(
     return { width: size?.[0] ?? 0, height: size?.[1] ?? 0 }
   })
 
-  const extensions = [
-    ...root.listExtensionsUsed().map((e) => e.extensionName),
-    ...root.listExtensionsRequired().map((e) => e.extensionName),
-  ]
-  const uniqueExt = [...new Set(extensions)]
+  const usedNames = new Set(root.listExtensionsUsed().map((e) => e.extensionName))
+  const requiredNames = new Set(
+    root.listExtensionsRequired().map((e) => e.extensionName),
+  )
+  // Preferir required + evidencia en primitivas: listExtensionsUsed a veces
+  // deja Meshopt y Draco a la vez tras el I/O aunque solo uno aplique.
+  const hasDracoApplied =
+    requiredNames.has('KHR_draco_mesh_compression') ||
+    root
+      .listMeshes()
+      .some((m) =>
+        m.listPrimitives().some((p) => p.getExtension('KHR_draco_mesh_compression')),
+      )
+  const hasMeshoptApplied =
+    requiredNames.has('EXT_meshopt_compression') ||
+    (!hasDracoApplied && usedNames.has('EXT_meshopt_compression'))
+
+  const uniqueExt = [
+    ...new Set([...usedNames, ...requiredNames]),
+  ].filter((e) => {
+    if (e === 'KHR_draco_mesh_compression') return hasDracoApplied
+    if (e === 'EXT_meshopt_compression') return hasMeshoptApplied
+    return true
+  })
+  if (hasDracoApplied && !uniqueExt.includes('KHR_draco_mesh_compression')) {
+    uniqueExt.push('KHR_draco_mesh_compression')
+  }
+  if (hasMeshoptApplied && !uniqueExt.includes('EXT_meshopt_compression')) {
+    uniqueExt.push('EXT_meshopt_compression')
+  }
 
   const compatibilityNotes: string[] = []
-  if (uniqueExt.includes('KHR_draco_mesh_compression')) {
+  if (hasDracoApplied) {
     compatibilityNotes.push('Requiere decodificador Draco en el cliente de visualización.')
   }
-  if (uniqueExt.includes('EXT_meshopt_compression')) {
+  if (hasMeshoptApplied) {
     compatibilityNotes.push('Requiere EXT_meshopt_compression / MeshoptDecoder.')
   }
   if (uniqueExt.some((e) => e.startsWith('KHR_materials_'))) {

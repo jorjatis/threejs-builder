@@ -48,6 +48,17 @@ export async function exportFullPackage(opts: {
 
   if (opts.settings.includeJsModule) {
     zip.file(modFixed.fileName, modFixed.code)
+    zip.file(modFixed.inlineFileName, modFixed.inlineCode)
+  }
+
+  // Guía de integración siempre que haya módulo o informe/readme/ejemplo
+  if (
+    opts.settings.includeJsModule ||
+    opts.settings.includeReadme ||
+    opts.settings.includeReport ||
+    opts.settings.includeExample
+  ) {
+    zip.file('INTEGRATION.md', modFixed.instructions)
   }
 
   const report = [
@@ -77,11 +88,10 @@ export async function exportFullPackage(opts: {
     )
   }
 
-  if (opts.settings.includeExample) {
-    if (opts.settings.jsMode === 'standalone') {
-      zip.file(
-        'example.html',
-        `<!doctype html>
+  if (opts.settings.includeExample && opts.settings.jsMode === 'standalone') {
+    zip.file(
+      'example.html',
+      `<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8"/>
@@ -94,8 +104,7 @@ export async function exportFullPackage(opts: {
   </style>
 </head>
 <body>
-  <div id="viewer" role="img" aria-label="${opts.scene.editorial.altText || opts.projectName}"></div>
-  ${opts.scene.editorial.creditsEnabled ? `<div class="credits">${opts.scene.editorial.credits}</div>` : ''}
+  <div id="viewer" role="img" aria-label="${opts.projectName}"></div>
   <script type="importmap">
   {
     "imports": {
@@ -112,14 +121,7 @@ export async function exportFullPackage(opts: {
 </body>
 </html>
 `,
-      )
-    } else {
-      zip.file(
-        'INTEGRATION.md',
-        modFixed.instructions +
-          '\n\nColoca el GLB junto al módulo y asegúrate de que tu bundler resuelva `three`.\n',
-      )
-    }
+    )
   }
 
   const blob = await zip.generateAsync({ type: 'blob' })

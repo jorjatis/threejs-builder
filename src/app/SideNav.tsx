@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import {
   Box,
   Image,
@@ -28,11 +29,16 @@ const ITEMS: { id: PanelSection; label: string; icon: typeof Box }[] = [
 export function SideNav() {
   const active = useAppStore((s) => s.activePanel)
   const setActive = useAppStore((s) => s.setActivePanel)
+  const hasModel = useAppStore((s) => s.hasModel)
   const setHelpOpen = useAppStore((s) => s.setHelpOpen)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
   const sidebarExpanded = useAppStore((s) => s.sidebarExpanded)
   const setSidebarExpanded = useAppStore((s) => s.setSidebarExpanded)
+
+  useEffect(() => {
+    if (!hasModel && active !== 'model') setActive('model')
+  }, [hasModel, active, setActive])
 
   return (
     <aside
@@ -40,20 +46,27 @@ export function SideNav() {
       aria-label="Navegación principal"
     >
       <nav className="sidebar__nav">
-        {ITEMS.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            className={`nav-btn${active === id ? ' nav-btn--active' : ''}`}
-            title={label}
-            aria-label={label}
-            aria-current={active === id ? 'page' : undefined}
-            onClick={() => setActive(id)}
-          >
-            <Icon size={18} strokeWidth={1.75} />
-            {sidebarExpanded ? <span className="nav-btn__label">{label}</span> : null}
-          </button>
-        ))}
+        {ITEMS.map(({ id, label, icon: Icon }) => {
+          const locked = !hasModel && id !== 'model'
+          return (
+            <button
+              key={id}
+              type="button"
+              className={`nav-btn${active === id ? ' nav-btn--active' : ''}`}
+              title={locked ? 'Importa un modelo primero' : label}
+              aria-label={label}
+              aria-current={active === id ? 'page' : undefined}
+              disabled={locked}
+              onClick={() => {
+                if (locked) return
+                setActive(id)
+              }}
+            >
+              <Icon size={18} strokeWidth={1.75} />
+              {sidebarExpanded ? <span className="nav-btn__label">{label}</span> : null}
+            </button>
+          )
+        })}
       </nav>
       <div className="sidebar__footer">
         <button
@@ -90,12 +103,12 @@ export function SideNav() {
         <button
           type="button"
           className="nav-btn"
-          title="Ayuda"
-          aria-label="Ayuda"
+          title="Info"
+          aria-label="Info"
           onClick={() => setHelpOpen(true)}
         >
           <HelpCircle size={18} strokeWidth={1.75} />
-          {sidebarExpanded ? <span className="nav-btn__label">Ayuda</span> : null}
+          {sidebarExpanded ? <span className="nav-btn__label">Info</span> : null}
         </button>
       </div>
     </aside>

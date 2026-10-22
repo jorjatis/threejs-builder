@@ -63,11 +63,9 @@ export function TexturesPanel() {
   const textures = useAppStore((s) => s.textures)
   const setTextures = useAppStore((s) => s.setTextures)
   const reloadViewerFromWorking = useAppStore((s) => s.reloadViewerFromWorking)
-  const pushHistory = useAppStore((s) => s.pushHistory)
   const updateStatsFromSession = useAppStore((s) => s.updateStatsFromSession)
   const markDirty = useAppStore((s) => s.markDirty)
   const askConfirm = useAppStore((s) => s.askConfirm)
-  const historyIndex = useAppStore((s) => s.historyIndex)
   const [busy, setBusy] = useState(false)
   const [maxSize, setMaxSize] = useState(1024)
   const [encodeFormat, setEncodeFormat] = useState<TextureEncodeFormat>('webp')
@@ -133,7 +131,7 @@ export function TexturesPanel() {
     if (!hasModel) return
     void refreshInventory()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasModel, historyIndex])
+  }, [hasModel])
 
   useEffect(() => {
     if (!preview) return
@@ -167,7 +165,6 @@ export function TexturesPanel() {
   )
 
   async function withDoc(
-    label: string,
     fn: (working: Awaited<ReturnType<typeof cloneDocumentFromGlb>>) => Promise<string | void>,
   ) {
     const session = getModelSession()
@@ -175,13 +172,12 @@ export function TexturesPanel() {
     setBusy(true)
     try {
       const doc = await cloneDocumentFromGlb(session.workingGlb)
-      const detail = await fn(doc)
+      await fn(doc)
       const glb = await writeDocumentToGlb(doc)
       updateWorkingGlb(glb, doc)
       await reloadViewerFromWorking()
       updateStatsFromSession()
       await refreshInventory()
-      pushHistory(detail ? `${label}: ${detail}` : label, glb, useAppStore.getState().stats)
       markDirty()
     } catch (err) {
       useAppStore
@@ -221,7 +217,6 @@ export function TexturesPanel() {
       })
       await reloadViewerFromWorking()
       updateStatsFromSession()
-      pushHistory(`Eliminar textura ${info.name}`, glb, useAppStore.getState().stats)
       markDirty()
       await refreshInventory()
     } finally {
@@ -260,7 +255,6 @@ export function TexturesPanel() {
       await reloadViewerFromWorking()
       updateStatsFromSession()
       await refreshInventory()
-      pushHistory(`Restaurar textura ${info.name}`, glb, useAppStore.getState().stats)
       markDirty()
     } finally {
       setBusy(false)
@@ -268,7 +262,7 @@ export function TexturesPanel() {
   }
 
   async function onApplyOne(info: TextureInfo) {
-    await withDoc(`Ajustar ${info.name}`, async (doc) => {
+    await withDoc(async (doc) => {
       const idx = textureIndexByName(doc, info.name)
       if (idx < 0) throw new Error('Textura no encontrada')
       await resizeSingleTexture(doc, idx, maxSize)
@@ -295,7 +289,6 @@ export function TexturesPanel() {
       await reloadViewerFromWorking()
       updateStatsFromSession()
       await refreshInventory()
-      pushHistory(`Máx. ${maxSize}px en todas (${n})`, glb, useAppStore.getState().stats)
       markDirty()
       briefToast(`Aplicado a ${n} textura(s)`)
     } catch (err) {
@@ -314,7 +307,7 @@ export function TexturesPanel() {
       confirmLabel: 'Comprimir',
     })
     if (!ok) return
-    await withDoc(`Comprimir ${encodeFormat}`, async (doc) => {
+    await withDoc(async (doc) => {
       const n = await compressAllTextures(doc, encodeFormat, quality)
       briefToast(`Comprimidas: ${n}`)
       return String(n)
@@ -333,7 +326,7 @@ export function TexturesPanel() {
       danger: true,
     })
     if (!ok) return
-    await withDoc('Quitar texturas no usadas', async (doc) => {
+    await withDoc(async (doc) => {
       const n = removeUnusedTextures(doc)
       briefToast(`Eliminadas: ${n}`)
       return String(n)
@@ -356,7 +349,6 @@ export function TexturesPanel() {
       await reloadViewerFromWorking()
       updateStatsFromSession()
       await refreshInventory()
-      pushHistory(`Resolución original: ${info.name}`, glb, useAppStore.getState().stats)
       markDirty()
     } finally {
       setBusy(false)
@@ -392,7 +384,6 @@ export function TexturesPanel() {
       await reloadViewerFromWorking()
       updateStatsFromSession()
       await refreshInventory()
-      pushHistory(`Resoluciones originales (${n})`, glb, useAppStore.getState().stats)
       markDirty()
       briefToast(`Restauradas: ${n}`)
     } finally {

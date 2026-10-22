@@ -6,6 +6,7 @@ import type {
   PerformanceBudget,
 } from '../types'
 import { PROJECT_SCHEMA_VERSION as SCHEMA } from '../types'
+import type { StoredRemovedTexture } from '../textures/removedTexturesPersist'
 
 export interface StoredProject {
   id: string
@@ -26,6 +27,14 @@ export interface StoredProject {
   pipelineSource: string
   /** Miniatura JPEG del visor al guardar (data URL). */
   thumbnailDataUrl?: string | null
+  /** Texturas eliminadas recuperables (opcional; proyectos antiguos no lo tienen). */
+  removedTextures?: StoredRemovedTexture[]
+  /** Preset de escena activo (Escena → Presets). */
+  activePresetId?: string | null
+  /** Preset de optimización activo (Optimización → Presets). */
+  activeOptimizationPresetId?: string | null
+  /** Preset global activo (Modelo → Presets globales). */
+  activeGlobalPresetId?: string | null
 }
 
 export function normalizeProjectName(name: string): string {
@@ -146,6 +155,12 @@ export async function duplicateProject(id: string, newName: string): Promise<Sto
     modifiedAt: Date.now(),
     originalGlb: src.originalGlb.slice(0),
     workingGlb: src.workingGlb.slice(0),
+    removedTextures: src.removedTextures?.map((t) => ({
+      ...t,
+      encodedImage: t.encodedImage ? t.encodedImage.slice() : null,
+      usages: t.usages.map((u) => ({ ...u, objectNames: [...u.objectNames] })),
+      roles: [...t.roles],
+    })),
   }
   await saveProject(copy)
   return copy

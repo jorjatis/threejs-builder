@@ -9,11 +9,11 @@ import type {
   PerformanceBudget,
   PerformanceAlert,
   ExportSettings,
-  HistoryEntry,
   SaveState,
   LoadProgress,
   ConsoleEntry,
   OptimizationOpId,
+  ArticlePreviewWidth,
 } from '../types'
 import {
   createDefaultBudget,
@@ -39,8 +39,6 @@ import {
 
 const initialUiPrefs = loadUiPrefs()
 applyThemeToDocument(initialUiPrefs.theme)
-
-const MAX_HISTORY = 30
 
 export interface ConfirmDialogState {
   title: string
@@ -79,24 +77,29 @@ interface AppState {
   budget: PerformanceBudget
   alerts: PerformanceAlert[]
   exportSettings: ExportSettings
-  history: HistoryEntry[]
-  historyIndex: number
   theme: UiTheme
   sidebarExpanded: boolean
   generatedCode: string | null
   activePresetId: string | null
+  activeOptimizationPresetId: string | null
+  activeGlobalPresetId: string | null
   showProjectsList: boolean
   projectsRevision: number
   viewerMode: '3d' | 'editorial'
+  /** Ancho simulado del mock de artículo (vista editorial). */
+  articlePreviewWidth: ArticlePreviewWidth
   optimizationFocusOp: OptimizationOpId | null
   /** Comparar original vs working en el visor. */
   compareSide: 'off' | 'before' | 'after'
 
   setActivePanel: (panel: PanelSection) => void
   setActivePresetId: (id: string | null) => void
+  setActiveOptimizationPresetId: (id: string | null) => void
+  setActiveGlobalPresetId: (id: string | null) => void
   setShowProjectsList: (v: boolean) => void
   bumpProjectsRevision: () => void
   setViewerMode: (mode: '3d' | 'editorial') => void
+  setArticlePreviewWidth: (w: ArticlePreviewWidth) => void
   setOptimizationFocusOp: (id: OptimizationOpId | null) => void
   setCompareSide: (side: 'off' | 'before' | 'after') => Promise<void>
   setProjectName: (name: string) => void
@@ -125,9 +128,6 @@ interface AppState {
 
   importFiles: (files: FileList | File[]) => Promise<void>
   reloadViewerFromWorking: () => Promise<void>
-  pushHistory: (label: string, glb: ArrayBuffer, stats: ModelStats | null) => void
-  undo: () => Promise<void>
-  redo: () => Promise<void>
   restoreOriginal: () => Promise<void>
   updateStatsFromSession: () => void
   setOptimizedSize: (bytes: number | null) => void
@@ -171,23 +171,39 @@ export const useAppStore = create<AppState>((set, get) => ({
   budget: createDefaultBudget(),
   alerts: [],
   exportSettings: createDefaultExportSettings(),
-  history: [],
-  historyIndex: -1,
   theme: initialUiPrefs.theme,
   sidebarExpanded: initialUiPrefs.sidebarExpanded,
   generatedCode: null,
   activePresetId: null,
+  activeOptimizationPresetId: null,
+  activeGlobalPresetId: null,
   showProjectsList: false,
   projectsRevision: 0,
   viewerMode: '3d',
+  articlePreviewWidth: '100%',
   optimizationFocusOp: null,
   compareSide: 'off',
 
   setActivePanel: (panel) => set({ activePanel: panel }),
-  setActivePresetId: (id) => set({ activePresetId: id }),
+  setActivePresetId: (id) =>
+    set((s) => ({
+      activePresetId: id,
+      saveState: { ...s.saveState, dirty: true },
+    })),
+  setActiveOptimizationPresetId: (id) =>
+    set((s) => ({
+      activeOptimizationPresetId: id,
+      saveState: { ...s.saveState, dirty: true },
+    })),
+  setActiveGlobalPresetId: (id) =>
+    set((s) => ({
+      activeGlobalPresetId: id,
+      saveState: { ...s.saveState, dirty: true },
+    })),
   setShowProjectsList: (v) => set({ showProjectsList: v }),
   bumpProjectsRevision: () => set((s) => ({ projectsRevision: s.projectsRevision + 1 })),
   setViewerMode: (mode) => set({ viewerMode: mode }),
+  setArticlePreviewWidth: (w) => set({ articlePreviewWidth: w }),
   setOptimizationFocusOp: (id) => set({ optimizationFocusOp: id }),
   setTheme: (theme) => {
     applyThemeToDocument(theme)
@@ -224,8 +240,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (prev === 'off') return
       set({ loadProgress: { active: true, message: 'Actualizando visor…', ratio: 0.5 } })
       try {
-        await getViewerService().loadGlb(session.workingGlb, { fitCamera: false })
-        getViewerService().applySceneConfig(get().scene, { moveCamera: false })
+        const viewer = getViewerService()
+        await viewer.loadGlbPreservingFraming(session.workingGlb)
+        viewer.applySceneConfig(get().scene, { moveCamera: false })
       } finally {
         set({ loadProgress: { active: false, message: '', ratio: null } })
       }
@@ -234,13 +251,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const buffer = side === 'before' ? session.originalGlb : session.workingGlb
     set({ loadProgress: { active: true, message: side === 'before' ? 'Original…' : 'Actual…', ratio: 0.4 } })
     try {
-      await getViewerService().loadGlb(buffer, { fitCamera: false })
-      getViewerService().applySceneConfig(get().scene, { moveCamera: false })
+      const viewer = getViewerService()
+      await viewer.loadGlbPreservingFraming(buffer)
+      viewer.applySceneConfig(get().scene, { moveCamera: false })
     } finally {
       set({ loadProgress: { active: false, message: '', ratio: null } })
     }
   },
-  setProjectName: (name) => set({ projectName: name, saveState: { ...get().saveState, dirty: true } }),
+  setProjectName: (name) =>
+    set((s) => ({
+      projectName: name,
+      exportSettings: { ...s.exportSettings, fileName: name },
+      saveState: { ...s.saveState, dirty: true },
+    })),
   setError: (msg) => set({ errorMessage: msg }),
   setToast: (msg) => set({ toastMessage: msg }),
   setHelpOpen: (v) => set({ helpOpen: v }),
@@ -277,11 +300,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({
       optimization: ensureOptimizationOps({ ...s.optimization, ...partial }),
       saveState: { ...s.saveState, dirty: true },
+      // Cambio manual: ya no coincide con un preset concreto
+      activeOptimizationPresetId: null,
     })),
   toggleOp: (id, enabled) =>
     set((s) => {
       const base = ensureOptimizationOps(s.optimization)
       return {
+        activeOptimizationPresetId: null,
         optimization: {
           ...base,
           ops: base.ops.map((op) => (op.id === id ? { ...op, enabled } : op)),
@@ -362,14 +388,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           next.modelRotation,
         )
       }
+      const clearsPreset = changed.some((k) =>
+        ['camera', 'interaction', 'autoRotate', 'lights', 'environment', 'container'].includes(k),
+      )
       return {
         scene: next,
         saveState: { ...s.saveState, dirty: true },
-        activePresetId: changed.some((k) =>
-          ['camera', 'interaction', 'autoRotate', 'lights', 'environment'].includes(k),
-        )
-          ? null
-          : s.activePresetId,
+        activePresetId: clearsPreset ? null : s.activePresetId,
+        activeGlobalPresetId: clearsPreset ? null : s.activeGlobalPresetId,
       }
     }),
   syncCameraFromViewer: () => {
@@ -427,6 +453,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setExportSettings: (partial) =>
     set((s) => ({
       exportSettings: { ...s.exportSettings, ...partial },
+      ...(partial.fileName != null ? { projectName: partial.fileName } : {}),
       saveState: { ...s.saveState, dirty: true },
     })),
   setTextures: (textures) => set({ textures }),
@@ -494,17 +521,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Si ya existe un proyecto con ese nombre, al guardar se actualizará (no duplicar)
       const { findProjectByName } = await import('../storage/projectDb')
       const existing = await findProjectByName(baseName)
+      const name = existing?.name ?? baseName
       set({
         projectId: existing?.id ?? null,
         hasModel: true,
         stats: imported.stats,
         originalStats: imported.stats,
         optimizedSizeBytes: imported.workingGlb.byteLength,
-        projectName: existing?.name ?? baseName,
+        projectName: name,
         scene: nextScene,
         exportSettings: {
           ...get().exportSettings,
-          fileName: `${baseName}-optimizado`,
+          fileName: name,
         },
         loadProgress: { active: false, message: '', ratio: null },
         compareSide: 'off',
@@ -515,10 +543,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           error: null,
         },
         appliedOps: [],
-        history: [],
-        historyIndex: -1,
         activePanel: 'model',
         textures: [],
+        activePresetId: null,
+        activeOptimizationPresetId: null,
+        activeGlobalPresetId: null,
       })
 
       if (extractedLights.length > 0) {
@@ -532,7 +561,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         }, 4000)
       }
 
-      get().pushHistory('Importación', imported.workingGlb, imported.stats)
     } catch (err) {
       const message =
         err instanceof ImportError
@@ -551,6 +579,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   reloadViewerFromWorking: async () => {
     const session = getModelSession()
     if (!session) return
+    // Volcar vista actual al store antes de recargar (texturas / opt / comparar…)
+    get().syncCameraFromViewer()
     set({
       loadProgress: { active: true, message: 'Actualizando visor…', ratio: 0.5 },
       compareSide: 'off',
@@ -558,58 +588,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const { readDocumentFromBuffer } = await import('../model/gltfIo')
       session.document = await readDocumentFromBuffer(session.workingGlb)
-      await getViewerService().loadGlb(session.workingGlb)
-      getViewerService().applySceneConfig(get().scene, { moveCamera: false })
+      const viewer = getViewerService()
+      await viewer.loadGlbPreservingFraming(session.workingGlb)
+      // Luces/env/límites desde store; no mover la cámara (ya restaurada)
+      viewer.applySceneConfig(get().scene, { moveCamera: false })
       get().updateStatsFromSession()
       const { extractTextureInventory } = await import('../textures/extractTextures')
+      const { mergeActiveAndRemovedTextures } = await import(
+        '../textures/removedTexturesPersist'
+      )
       const list = await extractTextureInventory(session.document)
-      const removed = [...session.removedTextures.values()].map((t) => ({ ...t, active: false }))
-      set({ textures: [...list.map((t) => ({ ...t, active: true })), ...removed] })
+      set({ textures: mergeActiveAndRemovedTextures(list, session.removedTextures) })
     } finally {
       set({ loadProgress: { active: false, message: '', ratio: null } })
     }
-  },
-
-  pushHistory: (label, glb, stats) => {
-    const entry: HistoryEntry = {
-      id: createId('hist'),
-      label,
-      timestamp: Date.now(),
-      glbSnapshot: glb.slice(0),
-      stats,
-      appliedOps: [...get().appliedOps],
-    }
-    set((s) => {
-      const trimmed = s.history.slice(0, s.historyIndex + 1)
-      const next = [...trimmed, entry].slice(-MAX_HISTORY)
-      return { history: next, historyIndex: next.length - 1 }
-    })
-  },
-
-  undo: async () => {
-    const { historyIndex, history } = get()
-    if (historyIndex <= 0) return
-    const nextIndex = historyIndex - 1
-    const entry = history[nextIndex]
-    const session = getModelSession()
-    if (!session) return
-    session.workingGlb = entry.glbSnapshot.slice(0)
-    session.lastValidGlb = session.workingGlb
-    set({ historyIndex: nextIndex, appliedOps: [...entry.appliedOps], stats: entry.stats })
-    await get().reloadViewerFromWorking()
-  },
-
-  redo: async () => {
-    const { historyIndex, history } = get()
-    if (historyIndex >= history.length - 1) return
-    const nextIndex = historyIndex + 1
-    const entry = history[nextIndex]
-    const session = getModelSession()
-    if (!session) return
-    session.workingGlb = entry.glbSnapshot.slice(0)
-    session.lastValidGlb = session.workingGlb
-    set({ historyIndex: nextIndex, appliedOps: [...entry.appliedOps], stats: entry.stats })
-    await get().reloadViewerFromWorking()
   },
 
   restoreOriginal: async () => {
@@ -628,6 +620,5 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveState: { ...get().saveState, dirty: true },
     })
     await get().reloadViewerFromWorking()
-    get().pushHistory('Restaurar original', session.workingGlb, get().originalStats)
   },
 }))

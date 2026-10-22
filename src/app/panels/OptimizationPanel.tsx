@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
-import { Expand, X } from 'lucide-react'
+import { Expand, WandSparkles, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import {
   Section,
@@ -120,7 +120,6 @@ export function OptimizationPanel() {
   const stats = useAppStore((s) => s.stats)
   const optimizedSize = useAppStore((s) => s.optimizedSizeBytes)
   const reloadViewerFromWorking = useAppStore((s) => s.reloadViewerFromWorking)
-  const pushHistory = useAppStore((s) => s.pushHistory)
   const restoreOriginal = useAppStore((s) => s.restoreOriginal)
   const setTextures = useAppStore((s) => s.setTextures)
   const textures = useAppStore((s) => s.textures)
@@ -128,7 +127,8 @@ export function OptimizationPanel() {
   const abortRef = useRef<AbortController | null>(null)
   const [logFilter, setLogFilter] = useState<'all' | 'info' | 'warn' | 'error' | 'success'>('all')
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false)
-  const [activePresetId, setActivePresetId] = useState<string | null>(null)
+  const activePresetId = useAppStore((s) => s.activeOptimizationPresetId)
+  const setActiveOptimizationPresetId = useAppStore((s) => s.setActiveOptimizationPresetId)
   const [consoleModalOpen, setConsoleModalOpen] = useState(false)
 
   useEffect(() => {
@@ -289,7 +289,6 @@ export function OptimizationPanel() {
         setTextures(await extractTextureInventory(session.document))
       }
 
-      pushHistory(label, result.glb, result.stats)
       pushConsole({
         level: 'success',
         message: `Pipeline finalizado`,
@@ -555,7 +554,8 @@ export function OptimizationPanel() {
     const nextSettings = applyPresetToSettings(preset, optimization)
     setOptimization(nextSettings)
     setPipelineSource(formatPipelineJson(preset.pipeline))
-    setActivePresetId(preset.id)
+    // Tras setOptimization (limpia el id); reaplicar selección del preset
+    setActiveOptimizationPresetId(preset.id)
 
     const steps =
       mode === 'simple' ? presetStepsForSimple(preset) : sortPipelineSteps(preset.pipeline.steps)
@@ -616,7 +616,15 @@ export function OptimizationPanel() {
         {!hasModel && <p className="muted">Importa un modelo para optimizar.</p>}
 
         {mode === 'simple' && (
-          <Section title="Presets">
+          <Collapse
+            title={
+              <>
+                <WandSparkles className="collapse__title-icon" size={14} aria-hidden />
+                Presets
+              </>
+            }
+            defaultOpen={false}
+          >
             <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
               Atajos según el objetivo. Configuran las ops y pueden aplicarse desde el original.
             </p>
@@ -634,7 +642,7 @@ export function OptimizationPanel() {
                 </button>
               ))}
             </div>
-          </Section>
+          </Collapse>
         )}
 
         {mode === 'simple' && (

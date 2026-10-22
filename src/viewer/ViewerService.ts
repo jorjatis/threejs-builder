@@ -39,6 +39,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { disposeObject3D } from '../utils/dispose'
+import { parseColorAlpha } from '../utils/colorAlpha'
 import type {
   AutoRotateConfig,
   CameraConfig,
@@ -379,7 +380,12 @@ export class ViewerService {
    * Por defecto conserva min/max del usuario (solo amplía max si hace falta).
    * `resetLimits: true` aplica los límites por defecto de Escena (0.5 / 3).
    */
-  fitCameraToModel(opts?: { silent?: boolean; resetLimits?: boolean }): void {
+  fitCameraToModel(opts?: {
+    silent?: boolean
+    resetLimits?: boolean
+    /** Encuadre tipo artículo: más frontal, elevado, con aire alrededor. */
+    style?: 'default' | 'editorial'
+  }): void {
     if (!this.controls) return
     this.modelRoot.updateMatrixWorld(true)
     const box = new Box3().setFromObject(this.modelRoot)
@@ -388,6 +394,7 @@ export class ViewerService {
     const size = box.getSize(new Vector3())
     const center = box.getCenter(new Vector3())
     const maxDim = Math.max(size.x, size.y, size.z, 0.001)
+    const editorial = opts?.style === 'editorial'
 
     let distance: number
     if (this.camera instanceof PerspectiveCamera) {
@@ -398,13 +405,15 @@ export class ViewerService {
       // Distancia para que el AABB quepa en alto y en ancho
       const fitH = maxDim / 2 / Math.tan(fov / 2)
       const fitW = maxDim / 2 / Math.tan(fov / 2) / Math.max(aspect, 0.01)
-      distance = Math.max(fitH, fitW) * 1.45
+      distance = Math.max(fitH, fitW) * (editorial ? 1.65 : 1.45)
     } else {
-      distance = maxDim * 2.2
+      distance = maxDim * (editorial ? 2.5 : 2.2)
     }
 
-    // Vista ¾ (ligeramente elevada)
-    const dir = new Vector3(0.55, 0.38, 1).normalize()
+    // Vista ¾: editorial más frontal y elevada (como embebidos de museo / reportaje)
+    const dir = editorial
+      ? new Vector3(0.32, 0.48, 1).normalize()
+      : new Vector3(0.55, 0.38, 1).normalize()
     this.camera.position.copy(center).addScaledVector(dir, distance)
     this.controls.target.copy(center)
 
@@ -469,33 +478,62 @@ export class ViewerService {
     }
   }
 
+  /** Aplica posición/target/límites/FOV sin tocar el bookmark de «Guardar encuadre». */
+  applyLiveCameraPatch(patch: LiveCameraPatch, opts?: { silent?: boolean }): void {
+    if (!this.controls) return
+    const minDistance = Math.max(0.01, patch.minDistance)
+    const maxDistance = Math.max(minDistance, patch.maxDistance)
+    this.camera.position.set(...patch.position)
+    this.controls.target.set(...patch.target)
+    this.controls.minDistance = minDistance
+    this.controls.maxDistance = maxDistance
+    if (this.lastCameraLimits) {
+      this.lastCameraLimits = {
+        ...this.lastCameraLimits,
+        minDistance,
+        maxDistance,
+      }
+    }
+    if (patch.fov != null && this.camera instanceof PerspectiveCamera) {
+      this.camera.fov = patch.fov
+      this.camera.updateProjectionMatrix()
+    }
+    this.controls.update()
+    if (!opts?.silent) this.emitCameraChange()
+  }
+
+  /**
+   * Recarga un GLB manteniendo la vista actual y el encuadre bookmark
+   * (texturas, optimización, comparar, etc.).
+   */
+  async loadGlbPreservingFraming(buffer: ArrayBuffer): Promise<Object3D> {
+    const live = this.captureLiveCameraPatch()
+    const bookmark = this.savedCamera
+      ? {
+          position: [...this.savedCamera.position] as [number, number, number],
+          target: [...this.savedCamera.target] as [number, number, number],
+          minDistance: this.savedCamera.minDistance,
+          maxDistance: this.savedCamera.maxDistance,
+          fov: this.savedCamera.fov,
+        }
+      : null
+    const root = await this.loadGlb(buffer, { fitCamera: false })
+    this.applyLiveCameraPatch(live, { silent: true })
+    this.savedCamera = bookmark
+    return root
+  }
+
   /** Vuelve al encuadre guardado (posición, límites y FOV) o al último fit si no hay guardado. */
   resetCamera(): void {
     if (!this.controls) return
     if (this.savedCamera) {
-      this.camera.position.set(...this.savedCamera.position)
-      this.controls.target.set(...this.savedCamera.target)
-      this.controls.minDistance = this.savedCamera.minDistance
-      this.controls.maxDistance = Math.max(
-        this.savedCamera.minDistance,
-        this.savedCamera.maxDistance,
-      )
-      if (this.lastCameraLimits) {
-        this.lastCameraLimits = {
-          ...this.lastCameraLimits,
-          minDistance: this.savedCamera.minDistance,
-          maxDistance: this.controls.maxDistance,
-        }
-      }
-      if (
-        this.savedCamera.fov != null &&
-        this.camera instanceof PerspectiveCamera
-      ) {
-        this.camera.fov = this.savedCamera.fov
-        this.camera.updateProjectionMatrix()
-      }
-      this.controls.update()
-      this.emitCameraChange()
+      this.applyLiveCameraPatch({
+        position: this.savedCamera.position,
+        target: this.savedCamera.target,
+        minDistance: this.savedCamera.minDistance,
+        maxDistance: this.savedCamera.maxDistance,
+        ...(this.savedCamera.fov != null ? { fov: this.savedCamera.fov } : {}),
+      })
       return
     }
     this.fitCameraToModel()
@@ -535,8 +573,25 @@ export class ViewerService {
 
   /** Solo fondo / exposición / DPR — no toca la cámara. */
   applyEnvironment(env: EnvironmentConfig): void {
-    this.scene.background = new Color(env.background)
+    const { hex, alpha } = parseColorAlpha(env.background || '#111111')
+    const color = new Color(hex)
     this.maxPixelRatio = env.maxPixelRatio
+    // ≥99% → fondo opaco de escena (fiable). Por debajo → clearColor con alpha.
+    if (alpha >= 0.99) {
+      this.scene.background = color
+      if (this.renderer) {
+        this.renderer.setClearColor(color, 1)
+        this.renderer.setClearAlpha(1)
+        this.renderer.domElement.style.backgroundColor = hex
+      }
+    } else {
+      this.scene.background = null
+      if (this.renderer) {
+        this.renderer.setClearColor(color, alpha)
+        this.renderer.setClearAlpha(alpha)
+        this.renderer.domElement.style.backgroundColor = 'transparent'
+      }
+    }
     if (this.renderer) {
       this.renderer.toneMappingExposure = env.exposure
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.maxPixelRatio))

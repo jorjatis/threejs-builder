@@ -7,6 +7,7 @@ import type {
 import { Info, ChevronDown, Plus, Minus, RotateCcw } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { formatColorAlpha, parseColorAlpha } from '../utils/colorAlpha'
 
 export function Switch({
   checked,
@@ -261,15 +262,117 @@ export function ColorInput({
   value,
   onChange,
   title,
+  disabled,
+  withAlpha = false,
 }: {
   value: string
   onChange: (hex: string) => void
   title?: string
+  disabled?: boolean
+  /** Si true, al abrir muestra control de opacidad (0 = transparente). */
+  withAlpha?: boolean
 }) {
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const parsed = parseColorAlpha(value)
+  const hex = parsed.hex
+  const alpha = parsed.alpha
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      // El diálogo nativo de color está fuera del DOM: no cerrar mientras se usa
+      const ae = document.activeElement
+      if (ae instanceof HTMLInputElement && ae.type === 'color') return
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (!withAlpha) {
+    return (
+      <label className={`color-field${disabled ? ' color-field--disabled' : ''}`} title={title}>
+        <input
+          type="color"
+          value={hex}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </label>
+    )
+  }
+
+  const swatchStyle =
+    alpha <= 0.001
+      ? undefined
+      : { backgroundColor: hex, opacity: Math.max(alpha, 0.15) }
+
+  function commitColor(nextHex: string) {
+    // Elegir color siempre deja opacidad usable (si estaba a 0 → 100%)
+    onChange(formatColorAlpha(nextHex, alpha <= 0.001 ? 1 : alpha))
+  }
+
+  function commitAlpha(nextAlpha: number) {
+    onChange(formatColorAlpha(hex, nextAlpha))
+  }
+
   return (
-    <label className="color-field" title={title}>
-      <input type="color" value={value} onChange={(e) => onChange(e.target.value)} />
-    </label>
+    <div className="color-picker" ref={wrapRef}>
+      <button
+        type="button"
+        className={`color-field color-field--swatch${disabled ? ' color-field--disabled' : ''}${
+          alpha <= 0.001 ? ' color-field--clear' : ''
+        }`}
+        title={title ?? 'Color'}
+        disabled={disabled}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => !disabled && setOpen((v) => !v)}
+      >
+        <span className="color-field__fill" style={swatchStyle} />
+      </button>
+      {open && (
+        <div
+          className="color-picker__pop"
+          role="dialog"
+          aria-label="Color y opacidad"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <label className="color-picker__row">
+            <span>Color</span>
+            <input
+              type="color"
+              value={hex}
+              onInput={(e) => commitColor((e.target as HTMLInputElement).value)}
+              onChange={(e) => commitColor(e.target.value)}
+            />
+          </label>
+          <label className="color-picker__row color-picker__row--alpha">
+            <span>Opacidad</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(alpha * 100)}
+              onInput={(e) =>
+                commitAlpha(Number((e.target as HTMLInputElement).value) / 100)
+              }
+              onChange={(e) => commitAlpha(Number(e.target.value) / 100)}
+            />
+            <span className="color-picker__pct">{Math.round(alpha * 100)}%</span>
+          </label>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -287,7 +390,7 @@ export function Collapse({
   children,
   defaultOpen = false,
 }: {
-  title: string
+  title: ReactNode
   children: ReactNode
   defaultOpen?: boolean
 }) {

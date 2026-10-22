@@ -79,7 +79,7 @@ export function AppDialogs() {
           >
             <div className="modal__header">
               <h2 id="help-title">
-                <HelpCircle size={16} /> Ayuda
+                <HelpCircle size={16} /> Info
               </h2>
               <button
                 type="button"

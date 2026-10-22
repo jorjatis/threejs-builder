@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
   Focus,
-  RotateCcw,
+  Aperture,
   Grid3x3,
   Axis3d,
   ChevronUp,
@@ -17,11 +17,89 @@ import {
   Columns2,
 } from 'lucide-react'
 import { getViewerService } from './ViewerService'
+import { ArticleFooter, ArticleHeader } from './ArticleChrome'
+import { SceneHelpRotate } from './SceneHelp'
+import { SceneLoading } from './SceneLoading'
+import { getLoremParagraphs } from '../editorial/lorem'
+import { getArticlePreviewSize } from '../editorial/previewSizes'
 import { useAppStore } from '../store/useAppStore'
+import type { ContainerConfig } from '../types'
 import { formatBytes, formatPercent, reductionPercent } from '../utils/format'
+import { isBackgroundTranslucent } from '../utils/colorAlpha'
+
+/**
+ * Tamaño del bloque 3D en el mock.
+ * - `vh` / `%` (alto) → relativos al alto del marco (`.abc-device`)
+ * - `%` (ancho) → relativo a la columna de contenido (~609px)
+ * - `full` (ancho) → vw del marco (rompe la columna, a ancho completo del artículo)
+ */
+function resolveContainerBox(
+  c: ContainerConfig,
+  frameWidthPx: number,
+  frameHeightPx: number,
+  contentWidthPx: number,
+  /** Distancia del borde izquierdo del contenido al del marco (≤ 0). */
+  fullBleedOffsetPx: number,
+): CSSProperties {
+  const wVal = Math.max(0, Number(c.widthValue) || 0)
+  const hVal = Math.max(0, Number(c.heightValue) || 0)
+  const frameW = Math.max(1, frameWidthPx)
+  const frameH = Math.max(1, frameHeightPx)
+  const contentW = Math.max(1, contentWidthPx)
+  const aspect = c.aspectRatio ?? undefined
+
+  const style: CSSProperties = {
+    aspectRatio: aspect,
+    minHeight: c.minHeight ?? undefined,
+    maxHeight: c.maxHeight ?? undefined,
+    marginRight: 'auto',
+    marginBottom: 24,
+  }
+
+  // —— Ancho (siempre centrado) ——
+  if (c.widthUnit === 'px') {
+    const w = Math.min(wVal, contentW)
+    style.width = w
+    style.maxWidth = '100%'
+    style.marginLeft = 'auto'
+  } else if (c.widthUnit === 'full') {
+    // Full bleed hasta los bordes del marco (sin provocar scroll X: el device hace clip).
+    const w = Math.min((frameW * (wVal || 100)) / 100, 1140, frameW)
+    style.width = w
+    style.maxWidth = w
+    style.marginLeft = fullBleedOffsetPx + (frameW - w) / 2
+    style.marginRight = 0
+  } else {
+    // % de la columna de contenido
+    const w = Math.min((contentW * (wVal || 100)) / 100, contentW)
+    style.width = w
+    style.maxWidth = '100%'
+    style.marginLeft = 'auto'
+  }
+
+  // —— Alto ——
+  if (c.heightUnit === 'auto') {
+    style.height = 'auto'
+    style.aspectRatio = aspect ?? '16 / 9'
+    style.minHeight = c.minHeight ?? 200
+  } else if (c.heightUnit === 'px') {
+    style.height = hVal
+  } else if (c.heightUnit === 'vh' || c.heightUnit === '%') {
+    style.height = (frameH * hVal) / 100
+  } else {
+    style.height = hVal
+  }
+
+  return style
+}
 
 export function ModelViewer() {
   const wrapRef = useRef<HTMLDivElement>(null)
+  const deviceRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [frameSize, setFrameSize] = useState({ w: 1200, h: 600 })
+  const [contentWidthPx, setContentWidthPx] = useState(609)
+  const [fullBleedOffsetPx, setFullBleedOffsetPx] = useState(0)
   const hasModel = useAppStore((s) => s.hasModel)
   const loadProgress = useAppStore((s) => s.loadProgress)
   const importFiles = useAppStore((s) => s.importFiles)
@@ -33,9 +111,9 @@ export function ModelViewer() {
   const stats = useAppStore((s) => s.stats)
   const viewerMode = useAppStore((s) => s.viewerMode)
   const setViewerMode = useAppStore((s) => s.setViewerMode)
+  const articlePreviewWidth = useAppStore((s) => s.articlePreviewWidth)
   const setActivePanel = useAppStore((s) => s.setActivePanel)
   const setShowProjectsList = useAppStore((s) => s.setShowProjectsList)
-  const projectName = useAppStore((s) => s.projectName)
   const compareSide = useAppStore((s) => s.compareSide)
   const setCompareSide = useAppStore((s) => s.setCompareSide)
   const appliedOps = useAppStore((s) => s.appliedOps)
@@ -49,8 +127,14 @@ export function ModelViewer() {
   const [fileDragging, setFileDragging] = useState(false)
   const [wireframe, setWireframe] = useState(false)
   const [vertices, setVertices] = useState(false)
+  /** En editorial: el bloque ha entrado en viewport (o eager). */
+  const [stageInView, setStageInView] = useState(true)
+  /** En editorial: overlay de carga terminado y canvas visible. */
+  const [stageRevealed, setStageRevealed] = useState(false)
+  const stageRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const editorial = viewerMode === 'editorial'
+  const lazyLoad = editorial && (scene.editorial.lazyLoad ?? false)
 
   useEffect(() => {
     const el = wrapRef.current
@@ -81,7 +165,88 @@ export function ModelViewer() {
   useEffect(() => {
     const t = window.setTimeout(() => getViewerService().resize(), 80)
     return () => window.clearTimeout(t)
-  }, [viewerMode, scene.container.widthValue, scene.container.heightValue, scene.container.preset])
+  }, [
+    viewerMode,
+    articlePreviewWidth,
+    frameSize.w,
+    frameSize.h,
+    contentWidthPx,
+    scene.container.widthValue,
+    scene.container.widthUnit,
+    scene.container.heightValue,
+    scene.container.heightUnit,
+    scene.container.preset,
+  ])
+
+  // Medir marco (vw/vh) y columna de contenido (% ancho), no el viewport del navegador.
+  useEffect(() => {
+    if (!editorial) return
+    const device = deviceRef.current
+    const body = bodyRef.current
+    if (!device) return
+    const sync = () => {
+      const w = device.clientWidth
+      const h = device.clientHeight
+      if (w > 0 && h > 0) setFrameSize({ w, h })
+      if (body) {
+        const cs = getComputedStyle(body)
+        const padL = parseFloat(cs.paddingLeft) || 0
+        const padR = parseFloat(cs.paddingRight) || 0
+        const inner = body.clientWidth - padL - padR
+        if (inner > 0) setContentWidthPx(inner)
+        const br = body.getBoundingClientRect()
+        const dr = device.getBoundingClientRect()
+        setFullBleedOffsetPx(dr.left - (br.left + padL))
+      }
+    }
+    sync()
+    const ro = new ResizeObserver(sync)
+    ro.observe(device)
+    if (body) ro.observe(body)
+    return () => ro.disconnect()
+  }, [editorial, articlePreviewWidth])
+
+  // Lazy / eager: cuándo empieza la carga del embed en el mock de artículo.
+  useEffect(() => {
+    if (!editorial) {
+      setStageInView(true)
+      setStageRevealed(true)
+      return
+    }
+    if (!lazyLoad) {
+      setStageInView(true)
+      return
+    }
+    setStageRevealed(false)
+    setStageInView(false)
+    const el = stageRef.current
+    if (!el) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setStageInView(true)
+          io.disconnect()
+        }
+      },
+      { root: deviceRef.current, threshold: 0.12, rootMargin: '40px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [editorial, lazyLoad, articlePreviewWidth])
+
+  // Overlay «Cargando modelo 3D…» hasta que el modelo esté listo (mín. breve para verlo).
+  useEffect(() => {
+    if (!editorial || !stageInView) return
+    if (loadProgress.active || !hasModel) {
+      setStageRevealed(false)
+      return
+    }
+    const t = window.setTimeout(() => {
+      setStageRevealed(true)
+      window.setTimeout(() => getViewerService().resize(), 40)
+    }, 450)
+    return () => window.clearTimeout(t)
+  }, [editorial, stageInView, loadProgress.active, hasModel, lazyLoad])
 
   useEffect(() => {
     const area = wrapRef.current?.closest('.viewer-shell') as HTMLElement | null
@@ -120,18 +285,30 @@ export function ModelViewer() {
   const ed = scene.editorial
   const c = scene.container
 
+  const envBg = scene.environment.background
+  const previewSize = getArticlePreviewSize(articlePreviewWidth)
+  // Siempre el ancho/alto medidos del marco (si el padre es más estrecho que el preset).
+  const frameW = Math.max(1, frameSize.w)
+  const frameH =
+    previewSize.height != null
+      ? Math.min(previewSize.height, frameSize.h || previewSize.height)
+      : Math.max(1, frameSize.h)
+
   const stageStyle: CSSProperties | undefined = editorial
     ? {
-        width: c.widthUnit === 'px' ? Math.min(c.widthValue || 640, 720) : '100%',
-        maxWidth: c.maxWidth ?? '100%',
-        height:
-          c.heightUnit === 'px'
-            ? Math.min(c.heightValue || 420, 480)
-            : c.heightUnit === 'vh'
-              ? `${Math.min(c.heightValue, 55)}vh`
-              : 360,
-        aspectRatio: c.aspectRatio ?? undefined,
-        background: c.background || '#d0d0d4',
+        ...resolveContainerBox(c, frameW, frameH, contentWidthPx, fullBleedOffsetPx),
+        // Mismo fondo que el entorno; si es transparente, blanco de página (sin damero).
+        background: isBackgroundTranslucent(envBg) ? '#ffffff' : envBg || '#ffffff',
+      }
+    : undefined
+  const deviceWidthStyle: CSSProperties | undefined = editorial
+    ? {
+        width: previewSize.width,
+        maxWidth: '100%',
+        height: previewSize.height ?? '100%',
+        maxHeight: '100%',
+        overflowX: 'hidden',
+        overflowY: 'auto',
       }
     : undefined
 
@@ -158,49 +335,58 @@ export function ModelViewer() {
       </div>
 
       <div className={`viewer-area${editorial ? ' viewer-area--article' : ''}`}>
-        {editorial && (
-          <header className="article-frame__masthead">
-            <span className="article-frame__burger" />
-            <strong className="article-frame__logo">DIARIO</strong>
-            <span className="article-frame__user">Vista previa</span>
-          </header>
-        )}
-
-        {editorial && (
-          <div className="article-frame__copy article-frame__copy--top">
-            {ed.titleEnabled && (
-              <h1 className="article-frame__title">{ed.title || projectName}</h1>
-            )}
-            {ed.leadEnabled && (
-              <p className="article-frame__lead">{ed.lead || 'Entradilla del reportaje…'}</p>
-            )}
-            {ed.textAboveEnabled && (
-              <p className="article-frame__p">{ed.textAbove || 'Texto superior…'}</p>
-            )}
-            <div className="article-frame__hint">360° · NAVEGA POR EL 3D</div>
-          </div>
-        )}
-
+        {/* Estructura estable: el nodo con wrapRef no se desmonta al cambiar de modo. */}
         <div
-          className={editorial ? 'article-frame__stage' : 'viewer-canvas-host'}
-          style={stageStyle}
+          ref={editorial ? deviceRef : undefined}
+          className={editorial ? 'abc-device' : 'viewer-area__fill'}
+          style={deviceWidthStyle}
         >
-          <div className="viewer-canvas-wrap" ref={wrapRef} />
-        </div>
-
-        {editorial && (
-          <div className="article-frame__copy article-frame__copy--bottom">
-            {ed.captionEnabled && (
-              <p className="article-frame__caption">{ed.caption || 'Pie de imagen'}</p>
-            )}
-            {ed.textBelowEnabled && (
-              <p className="article-frame__p">{ed.textBelow || 'Texto inferior…'}</p>
-            )}
-            {ed.creditsEnabled && (
-              <p className="article-frame__credits">{ed.credits || 'Créditos'}</p>
-            )}
+          <div className={editorial ? 'abc-article' : 'viewer-area__fill'}>
+            {editorial && <ArticleHeader />}
+            <div
+              ref={editorial ? bodyRef : undefined}
+              className={editorial ? 'abc-article__body' : 'viewer-canvas-host'}
+            >
+              {editorial &&
+                ed.textAboveEnabled &&
+                getLoremParagraphs(ed.textAboveParagraphs ?? 2).map((p, i) => (
+                  <p key={`above-${i}`} className="abc-copy">
+                    {p}
+                  </p>
+                ))}
+              <div className={editorial ? 'tjs-scene' : 'viewer-area__fill'}>
+                <div
+                  ref={editorial ? stageRef : undefined}
+                  className={editorial ? 'tjs-scene__c' : 'viewer-area__fill'}
+                  style={stageStyle}
+                >
+                  {editorial &&
+                    (stageInView || !lazyLoad) &&
+                    (ed.rotateHelpEnabled ?? true) && (
+                      <SceneHelpRotate />
+                    )}
+                  <div
+                    className={`viewer-canvas-wrap${
+                      !editorial && isBackgroundTranslucent(envBg)
+                        ? ' viewer-canvas-wrap--transparent'
+                        : ''
+                    }${editorial && !stageRevealed ? ' viewer-canvas-wrap--pending' : ''}`}
+                    ref={wrapRef}
+                  />
+                  {editorial && stageInView && !stageRevealed && <SceneLoading />}
+                </div>
+              </div>
+              {editorial &&
+                ed.textBelowEnabled &&
+                getLoremParagraphs(ed.textBelowParagraphs ?? 2).map((p, i) => (
+                  <p key={`below-${i}`} className="abc-copy">
+                    {p}
+                  </p>
+                ))}
+            </div>
+            {editorial && <ArticleFooter />}
           </div>
-        )}
+        </div>
 
         {!editorial && (
           <div className="viewer-toolbar" role="toolbar" aria-label="Herramientas del visor">
@@ -221,7 +407,7 @@ export function ModelViewer() {
                 title="Volver al encuadre guardado"
                 onClick={() => getViewerService().resetCamera()}
               >
-                <RotateCcw size={14} />
+                <Aperture size={14} />
               </button>
               <button
                 type="button"
@@ -383,7 +569,7 @@ export function ModelViewer() {
           <div className="viewer-drop viewer-drop--active">Suelta el modelo para importarlo</div>
         )}
 
-        {loadProgress.active && (
+        {loadProgress.active && !editorial && (
           <div className="viewer-loading">
             <span className="spinner" />
             <span>{loadProgress.message}</span>

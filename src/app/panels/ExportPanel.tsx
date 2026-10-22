@@ -24,9 +24,9 @@ export function ExportPanel() {
   const [busy, setBusy] = useState(false)
 
   const modulePreview = useMemo(() => {
-    const modelName = `${settings.fileName}.${settings.format === 'glb' ? 'glb' : 'gltf'}`
+    const modelName = `${projectName}.${settings.format === 'glb' ? 'glb' : 'gltf'}`
     return generateJsModule(settings.jsMode, scene, modelName)
-  }, [settings.fileName, settings.format, settings.jsMode, scene])
+  }, [projectName, settings.format, settings.jsMode, scene])
 
   async function exportModel() {
     const session = getModelSession()
@@ -34,7 +34,7 @@ export function ExportPanel() {
     setBusy(true)
     setStatus(null)
     try {
-      const result = await exportModelDocument(session.document, settings.format, settings.fileName)
+      const result = await exportModelDocument(session.document, settings.format, projectName)
       if (!result.valid) {
         setStatus(`Validación: ${result.validationMessage}`)
         useAppStore.getState().setError(result.validationMessage)
@@ -58,9 +58,14 @@ export function ExportPanel() {
 
   async function downloadJs() {
     previewJs()
-    const blob = new Blob([modulePreview.code], { type: 'text/javascript' })
+    const JSZip = (await import('jszip')).default
     const { downloadBlob } = await import('../../utils/download')
-    downloadBlob(blob, modulePreview.fileName)
+    const zip = new JSZip()
+    zip.file(modulePreview.fileName, modulePreview.code)
+    zip.file(modulePreview.inlineFileName, modulePreview.inlineCode)
+    zip.file('INTEGRATION.md', modulePreview.instructions)
+    const blob = await zip.generateAsync({ type: 'blob' })
+    downloadBlob(blob, `${modulePreview.fileName.replace(/\.js$/i, '')}-modulo.zip`)
   }
 
   async function exportZip() {
@@ -70,7 +75,7 @@ export function ExportPanel() {
     try {
       await exportFullPackage({
         document: session.document,
-        settings,
+        settings: { ...settings, fileName: projectName },
         scene,
         projectName,
         originalStats,
@@ -98,8 +103,8 @@ export function ExportPanel() {
         <Section title="Opciones generales">
           <Field label="Nombre de archivo">
             <TextInput
-              value={settings.fileName}
-              onChange={(e) => setExportSettings({ fileName: e.target.value })}
+              value={projectName}
+              onChange={(e) => useAppStore.getState().setProjectName(e.target.value)}
             />
           </Field>
           <p className="dim">
@@ -173,7 +178,7 @@ export function ExportPanel() {
             </pre>
           )}
           <details style={{ marginTop: 8 }}>
-            <summary className="muted">Instrucciones de integración</summary>
+            <summary className="muted">Vista previa de INTEGRATION.md</summary>
             <pre className="code-preview">{modulePreview.instructions}</pre>
           </details>
         </Section>

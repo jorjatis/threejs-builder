@@ -26,7 +26,6 @@ export function PerformancePanel() {
   const setIsOptimizing = useAppStore((s) => s.setIsOptimizing)
   const pushConsole = useAppStore((s) => s.pushConsole)
   const reloadViewerFromWorking = useAppStore((s) => s.reloadViewerFromWorking)
-  const pushHistory = useAppStore((s) => s.pushHistory)
   const setTextures = useAppStore((s) => s.setTextures)
   const setToast = useAppStore((s) => s.setToast)
   const appliedOps = useAppStore((s) => s.appliedOps)
@@ -61,18 +60,6 @@ export function PerformancePanel() {
       ops: nextOps,
       geometryCompression: wantMeshopt ? 'meshopt' : wantDraco ? 'draco' : optimization.geometryCompression,
     }
-  }
-
-  function goToOps(ops?: OptimizationOpId[], activate = false) {
-    if (!ops?.length) {
-      setActivePanel('optimization')
-      return
-    }
-    if (activate) {
-      setOptimization(buildSettingsWithOps(ops))
-    }
-    setActivePanel('optimization')
-    setOptimizationFocusOp(ops.find((id) => !HIDDEN_FROM_PERF.has(id)) ?? ops[0])
   }
 
   async function applySuggested(ops: OptimizationOpId[] | undefined, alertId: string) {
@@ -121,7 +108,6 @@ export function PerformancePanel() {
       if (session?.document) {
         setTextures(await extractTextureInventory(session.document))
       }
-      pushHistory(`Sugeridas: ${runnable.join('+')}`, result.glb, result.stats)
       const orig = originalStats?.fileSizeBytes ?? result.glb.byteLength
       setToast(
         `Aplicado · ${formatBytes(orig)} → ${formatBytes(result.glb.byteLength)} (${formatPercent(reductionPercent(orig, result.glb.byteLength))})`,
@@ -301,26 +287,16 @@ export function PerformancePanel() {
                             ? 'Aplicando…'
                             : `Aplicar: ${describeOps(a.suggestedOps.filter((id) => !HIDDEN_FROM_PERF.has(id))) || 'sugeridas'}`}
                         </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          disabled={isOptimizing}
-                          onClick={() => goToOps(a.suggestedOps, true)}
-                        >
-                          Solo activar y ir
-                        </button>
                       </div>
                     )}
-                    {(!a.suggestedOps || a.suggestedOps.length === 0) && (
+                    {(!a.suggestedOps || a.suggestedOps.length === 0) && a.id === 'texres' && (
                       <div className="alert-item__actions">
                         <button
                           type="button"
                           className="btn"
-                          onClick={() =>
-                            setActivePanel(a.id === 'texres' ? 'textures' : 'optimization')
-                          }
+                          onClick={() => setActivePanel('textures')}
                         >
-                          {a.id === 'texres' ? 'Ir a Texturas' : 'Ir a Optimización'}
+                          Ir a Texturas
                         </button>
                       </div>
                     )}

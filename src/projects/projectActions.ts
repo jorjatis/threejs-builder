@@ -9,14 +9,32 @@ import {
   findProjectByName,
   type StoredProject,
 } from '../storage/projectDb'
-import { PROJECT_SCHEMA_VERSION } from '../types'
+import { PROJECT_SCHEMA_VERSION, type SceneConfig } from '../types'
 import { readDocumentFromBuffer } from '../model/gltfIo'
 import { inspectDocument } from '../model/inspectModel'
-import { getViewerService } from '../viewer/ViewerService'
+import { getViewerService, type ViewerService } from '../viewer/ViewerService'
 import { downloadBlob } from '../utils/download'
 import { extractTextureInventory } from '../textures/extractTextures'
+import {
+  mergeActiveAndRemovedTextures,
+  restoreRemovedTexturesMap,
+  serializeRemovedTextures,
+  serializeRemovedTexturesForJson,
+  type StoredRemovedTexture,
+} from '../textures/removedTexturesPersist'
+
+/** Restaura la escena y el encuadre guardados (sin re-fit que los pise). */
+function restoreProjectScene(viewer: ViewerService, scene: SceneConfig): void {
+  viewer.applySceneConfig(scene, { moveCamera: true })
+  viewer.resize()
+  viewer.rememberCamera()
+}
 
 export async function saveCurrentProject(): Promise<void> {
+  // Volcar encuadre/límites vivos del visor al store antes de serializar
+  useAppStore.getState().syncCameraFromViewer()
+  getViewerService().rememberCamera()
+
   const state = useAppStore.getState()
   const session = getModelSession()
   if (!session) {
@@ -58,9 +76,11 @@ export async function saveCurrentProject(): Promise<void> {
     const thumb =
       getViewerService().captureThumbnail(160) ?? previousThumb ?? null
 
+    // Releer tras syncCamera (puede haber marcado dirty / actualizado scene)
+    const latest = useAppStore.getState()
     const project: StoredProject = {
       id,
-      name: state.projectName.trim() || session.fileName,
+      name: latest.projectName.trim() || session.fileName,
       createdAt,
       modifiedAt: Date.now(),
       schemaVersion: PROJECT_SCHEMA_VERSION,
@@ -69,13 +89,17 @@ export async function saveCurrentProject(): Promise<void> {
       originalGlb: session.originalGlb,
       workingGlb: session.workingGlb,
       originalSizeBytes: session.originalSizeBytes,
-      optimization: state.optimization,
-      scene: state.scene,
-      exportSettings: state.exportSettings,
-      budget: state.budget,
-      appliedOps: state.appliedOps,
-      pipelineSource: state.pipelineSource,
+      optimization: latest.optimization,
+      scene: latest.scene,
+      exportSettings: latest.exportSettings,
+      budget: latest.budget,
+      appliedOps: latest.appliedOps,
+      pipelineSource: latest.pipelineSource,
       thumbnailDataUrl: thumb,
+      removedTextures: serializeRemovedTextures(session.removedTextures),
+      activePresetId: latest.activePresetId,
+      activeOptimizationPresetId: latest.activeOptimizationPresetId,
+      activeGlobalPresetId: latest.activeGlobalPresetId,
     }
     await saveProject(project)
     useAppStore.setState((s) => ({
@@ -115,6 +139,7 @@ export async function openProject(id: string): Promise<void> {
   try {
     const project = await loadProject(id)
     const document = await readDocumentFromBuffer(project.workingGlb)
+    const removedTextures = restoreRemovedTexturesMap(project.removedTextures)
     setModelSession({
       fileName: project.fileName,
       format: project.format,
@@ -124,22 +149,18 @@ export async function openProject(id: string): Promise<void> {
       lastValidGlb: project.workingGlb,
       document,
       companionFiles: [],
-      removedTextures: new Map(),
+      removedTextures,
     })
 
     const viewer = getViewerService()
-    await viewer.loadGlb(project.workingGlb)
-    viewer.applySceneConfig(project.scene, { moveCamera: false })
-    viewer.resize()
-    viewer.fitCameraToModel()
-    viewer.rememberCamera()
+    await viewer.loadGlb(project.workingGlb, { fitCamera: false })
+    restoreProjectScene(viewer, project.scene)
     requestAnimationFrame(() => {
-      viewer.resize()
-      viewer.fitCameraToModel()
-      viewer.rememberCamera()
+      restoreProjectScene(viewer, project.scene)
     })
 
-    const textures = await extractTextureInventory(document)
+    const activeTextures = await extractTextureInventory(document)
+    const textures = mergeActiveAndRemovedTextures(activeTextures, removedTextures)
 
     const originalSize =
       project.originalSizeBytes || project.originalGlb.byteLength || 0
@@ -161,7 +182,7 @@ export async function openProject(id: string): Promise<void> {
       hasModel: true,
       optimization: project.optimization,
       scene: project.scene,
-      exportSettings: project.exportSettings,
+      exportSettings: { ...project.exportSettings, fileName: project.name },
       budget: project.budget,
       appliedOps: project.appliedOps as never,
       pipelineSource: project.pipelineSource,
@@ -169,6 +190,9 @@ export async function openProject(id: string): Promise<void> {
       originalStats,
       stats,
       optimizedSizeBytes: project.workingGlb.byteLength,
+      activePresetId: project.activePresetId ?? null,
+      activeOptimizationPresetId: project.activeOptimizationPresetId ?? null,
+      activeGlobalPresetId: project.activeGlobalPresetId ?? null,
       saveState: { dirty: false, lastSavedAt: project.modifiedAt, saving: false, error: null },
       loadProgress: { active: false, message: '', ratio: null },
     })
@@ -184,6 +208,8 @@ export async function openProject(id: string): Promise<void> {
 export { listProjects, deleteProject }
 
 export async function exportPortableProject(): Promise<void> {
+  useAppStore.getState().syncCameraFromViewer()
+  getViewerService().rememberCamera()
   const state = useAppStore.getState()
   const session = getModelSession()
   if (!session) {
@@ -204,6 +230,10 @@ export async function exportPortableProject(): Promise<void> {
     budget: state.budget,
     appliedOps: state.appliedOps,
     pipelineSource: state.pipelineSource,
+    removedTextures: serializeRemovedTexturesForJson(session.removedTextures),
+    activePresetId: state.activePresetId,
+    activeOptimizationPresetId: state.activeOptimizationPresetId,
+    activeGlobalPresetId: state.activeGlobalPresetId,
     exportedAt: Date.now(),
   }
   zip.file('project.json', JSON.stringify(meta, null, 2))
@@ -233,6 +263,10 @@ export async function importPortableProject(file: File): Promise<void> {
     budget: StoredProject['budget']
     appliedOps: string[]
     pipelineSource: string
+    removedTextures?: StoredRemovedTexture[]
+    activePresetId?: string | null
+    activeOptimizationPresetId?: string | null
+    activeGlobalPresetId?: string | null
   }
   if (meta.schemaVersion !== PROJECT_SCHEMA_VERSION) {
     throw new Error(`Esquema incompatible: v${meta.schemaVersion}`)
@@ -240,6 +274,7 @@ export async function importPortableProject(file: File): Promise<void> {
   const originalGlb = await originalFile.async('arraybuffer')
   const workingGlb = await workingFile.async('arraybuffer')
   const document = await readDocumentFromBuffer(workingGlb)
+  const removedTextures = restoreRemovedTexturesMap(meta.removedTextures)
   setModelSession({
     fileName: meta.fileName,
     format: meta.format,
@@ -249,14 +284,13 @@ export async function importPortableProject(file: File): Promise<void> {
     lastValidGlb: workingGlb,
     document,
     companionFiles: [],
-    removedTextures: new Map(),
+    removedTextures,
   })
   const viewer = getViewerService()
-  await viewer.loadGlb(workingGlb)
-  viewer.applySceneConfig(meta.scene, { moveCamera: false })
-  viewer.fitCameraToModel()
-  viewer.rememberCamera()
-  const textures = await extractTextureInventory(document)
+  await viewer.loadGlb(workingGlb, { fitCamera: false })
+  restoreProjectScene(viewer, meta.scene)
+  const activeTextures = await extractTextureInventory(document)
+  const textures = mergeActiveAndRemovedTextures(activeTextures, removedTextures)
   const originalSize = meta.originalSizeBytes || originalGlb.byteLength
   const originalDoc = await readDocumentFromBuffer(originalGlb)
   const originalStats = inspectDocument(originalDoc, {
@@ -277,7 +311,7 @@ export async function importPortableProject(file: File): Promise<void> {
     hasModel: true,
     optimization: meta.optimization,
     scene: meta.scene,
-    exportSettings: meta.exportSettings,
+    exportSettings: { ...meta.exportSettings, fileName: meta.name },
     budget: meta.budget,
     appliedOps: meta.appliedOps as never,
     pipelineSource: meta.pipelineSource,
@@ -285,6 +319,9 @@ export async function importPortableProject(file: File): Promise<void> {
     originalStats,
     stats,
     optimizedSizeBytes: workingGlb.byteLength,
+    activePresetId: meta.activePresetId ?? null,
+    activeOptimizationPresetId: meta.activeOptimizationPresetId ?? null,
+    activeGlobalPresetId: meta.activeGlobalPresetId ?? null,
     saveState: { dirty: true, lastSavedAt: null, saving: false, error: null },
   })
 }
