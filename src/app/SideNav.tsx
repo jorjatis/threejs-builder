@@ -26,6 +26,9 @@ const ITEMS: { id: PanelSection; label: string; icon: typeof Box }[] = [
   { id: 'export', label: 'Exportación', icon: Package },
 ]
 
+/** Escena se puede configurar sin modelo; el resto requiere import. */
+const UNLOCKED_WITHOUT_MODEL = new Set<PanelSection>(['model', 'scene'])
+
 export function SideNav() {
   const active = useAppStore((s) => s.activePanel)
   const setActive = useAppStore((s) => s.setActivePanel)
@@ -37,7 +40,7 @@ export function SideNav() {
   const setSidebarExpanded = useAppStore((s) => s.setSidebarExpanded)
 
   useEffect(() => {
-    if (!hasModel && active !== 'model') setActive('model')
+    if (!hasModel && !UNLOCKED_WITHOUT_MODEL.has(active)) setActive('model')
   }, [hasModel, active, setActive])
 
   return (
@@ -47,7 +50,7 @@ export function SideNav() {
     >
       <nav className="sidebar__nav">
         {ITEMS.map(({ id, label, icon: Icon }) => {
-          const locked = !hasModel && id !== 'model'
+          const locked = !hasModel && !UNLOCKED_WITHOUT_MODEL.has(id)
           return (
             <button
               key={id}

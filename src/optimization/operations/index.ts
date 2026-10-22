@@ -377,6 +377,15 @@ export async function runPipelineOnDocument(
     await document.transform(...transforms)
     ctx.onLog?.('success', `Completado: ${def.name}`, undefined)
     ctx.onLog?.('debug', `${def.name} en ${(performance.now() - t0).toFixed(0)} ms`)
+
+    // Cede el hilo principal entre ops para no congelar la UI.
+    await new Promise<void>((resolve) => {
+      if (typeof scheduler !== 'undefined' && 'yield' in scheduler) {
+        void (scheduler as { yield: () => Promise<void> }).yield().then(() => resolve())
+      } else {
+        setTimeout(resolve, 0)
+      }
+    })
   }
 
   return document

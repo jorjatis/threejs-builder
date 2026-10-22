@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { FolderOpen, RotateCcw, Upload, WandSparkles } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { Section, Badge, InfoTip, Collapse } from '../../components/ui'
+import { Section, Badge, InfoTip, Collapse, PanelShell, Stat } from '../../components/ui'
 import { formatBytes, formatNumber } from '../../utils/format'
 import type { ModelStats } from '../../types'
 import {
@@ -10,28 +10,12 @@ import {
   type GlobalPreset,
 } from '../../presets/globalPresets'
 import { getViewerService } from '../../viewer/ViewerService'
-import { runOptimization, settingsToSteps } from '../../optimization/runOptimization'
+import { settingsToSteps } from '../../optimization/runOptimization'
 import { formatPipelineJson } from '../../optimization/presets'
-import { getModelSession } from '../../store/modelSession'
-import { extractTextureInventory } from '../../textures/extractTextures'
-
-function Stat({
-  label,
-  value,
-  meta,
-}: {
-  label: string
-  value: string
-  meta?: string
-}) {
-  return (
-    <div className="stat-item">
-      <div className="stat-item__label">{label}</div>
-      <div className="stat-item__value">{value}</div>
-      {meta ? <div className="stat-item__meta">{meta}</div> : null}
-    </div>
-  )
-}
+import {
+  applyOptimizationResult,
+  showToast,
+} from '../../optimization/optimizationActions'
 
 function summarizeResolutions(dims: ModelStats['textureDimensions']): string | null {
   if (!dims.length) return null
@@ -87,12 +71,8 @@ export function ModelPanel() {
   const activeGlobalPresetId = useAppStore((s) => s.activeGlobalPresetId)
   const setActivePresetId = useAppStore((s) => s.setActivePresetId)
   const syncCameraFromViewer = useAppStore((s) => s.syncCameraFromViewer)
-  const reloadViewerFromWorking = useAppStore((s) => s.reloadViewerFromWorking)
   const pushConsole = useAppStore((s) => s.pushConsole)
-  const setTextures = useAppStore((s) => s.setTextures)
-  const setIsOptimizing = useAppStore((s) => s.setIsOptimizing)
   const isOptimizing = useAppStore((s) => s.isOptimizing)
-  const setToast = useAppStore((s) => s.setToast)
   const [applyingId, setApplyingId] = useState<string | null>(null)
 
   const resSummary = stats ? summarizeResolutions(stats.textureDimensions) : null
@@ -100,7 +80,7 @@ export function ModelPanel() {
 
   async function applyGlobalPreset(preset: GlobalPreset) {
     if (!hasModel) {
-      setToast('Importa un modelo antes de aplicar un preset global.')
+      showToast('Importa un modelo antes de aplicar un preset global.')
       return
     }
     const ok = await askConfirm({
@@ -111,8 +91,6 @@ export function ModelPanel() {
     if (!ok) return
 
     setApplyingId(preset.id)
-    setIsOptimizing(true)
-    pushConsole({ level: 'info', message: `▶ Preset global «${preset.name}»` })
 
     try {
       const nextOpt = buildGlobalPresetOptimization(
@@ -128,7 +106,6 @@ export function ModelPanel() {
       )
       setBudget(preset.budget)
 
-      // Escena: interacción, entorno transparente, límites de cámara
       const curScene = useAppStore.getState().scene
       setScene({
         ...(preset.scene.environment
@@ -156,61 +133,35 @@ export function ModelPanel() {
       viewer.rememberCamera()
       syncCameraFromViewer()
 
-      const result = await runOptimization(
-        nextOpt,
-        settingsToSteps(nextOpt),
-        {
-          onLog: (level, message, details) => pushConsole({ level, message, details }),
+      const result = await applyOptimizationResult({
+        settings: nextOpt,
+        steps: settingsToSteps(nextOpt),
+        base: 'original',
+        label: `Preset global «${preset.name}»`,
+        afterReload: () => {
+          viewer.applySceneConfig(useAppStore.getState().scene, { moveCamera: false })
+          viewer.fitCameraToModel({ style: 'editorial' })
+          viewer.rememberCamera()
+          syncCameraFromViewer()
         },
-        'original',
-      )
-
-      useAppStore.setState({
-        stats: result.stats,
-        optimizedSizeBytes: result.glb.byteLength,
-        appliedOps: result.appliedOps,
-        saveState: { ...useAppStore.getState().saveState, dirty: true },
       })
 
-      await reloadViewerFromWorking()
-      // Reaplicar encuadre editorial tras la recarga (preserva framing bookmark + vista)
-      viewer.applySceneConfig(useAppStore.getState().scene, { moveCamera: false })
-      viewer.fitCameraToModel({ style: 'editorial' })
-      viewer.rememberCamera()
-      syncCameraFromViewer()
-
-      const session = getModelSession()
-      if (session?.document) {
-        setTextures(await extractTextureInventory(session.document))
-      }
       pushConsole({
         level: 'success',
         message: `Preset «${preset.name}» aplicado`,
         durationMs: result.durationMs,
         details: formatBytes(result.glb.byteLength),
       })
-      setToast(`Preset «${preset.name}» aplicado. Guarda el proyecto para conservarlo.`)
-      window.setTimeout(() => {
-        if (useAppStore.getState().toastMessage?.startsWith('Preset «')) {
-          useAppStore.getState().setToast(null)
-        }
-      }, 3200)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error al aplicar el preset'
-      useAppStore.getState().setError(message)
-      pushConsole({ level: 'error', message })
+      showToast(`Preset «${preset.name}» aplicado. Guarda el proyecto para conservarlo.`)
+    } catch {
+      /* error ya manejado */
     } finally {
       setApplyingId(null)
-      setIsOptimizing(false)
     }
   }
 
   return (
-    <>
-      <div className="tools-panel__header">
-        <h1>Modelo</h1>
-      </div>
-      <div className="tools-panel__body">
+    <PanelShell title="Modelo">
         {hasModel && (
           <Collapse
             title={
@@ -221,7 +172,7 @@ export function ModelPanel() {
             }
             defaultOpen
           >
-            <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
+            <p className="muted mt-0 mb-2">
               Atajos para embebidos en web: sin zoom (no roba el scroll), sin pan, fondo
               transparente y peso acotado.
             </p>
@@ -329,10 +280,9 @@ export function ModelPanel() {
           <p className="muted">Importa un modelo para ver estadísticas.</p>
         )}
 
-        <p className="dim" style={{ marginTop: 12 }}>
+        <p className="dim mt-3">
           <Badge>local</Badge> Guardado en este navegador (IndexedDB)
         </p>
-      </div>
-    </>
+    </PanelShell>
   )
 }

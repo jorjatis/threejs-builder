@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { Download, X, ZoomIn, ZoomOut, RotateCcw, Info, Eye, Trash2 } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { Section, Field, NumberInput, Select, Badge } from '../../components/ui'
+import { Section, Field, NumberInput, Select, Badge, PanelShell, AppModal } from '../../components/ui'
 import {
   extractTextureInventory,
   removeTextureFromDocument,
@@ -24,6 +23,7 @@ import { getModelSession, updateWorkingGlb } from '../../store/modelSession'
 import { writeDocumentToGlb, cloneDocumentFromGlb, readDocumentFromBuffer } from '../../model/gltfIo'
 import { formatBytes, reductionPercent, formatPercent } from '../../utils/format'
 import { downloadBlob } from '../../utils/download'
+import { showToast } from '../../optimization/optimizationActions'
 import type { TextureInfo, TextureMapRole } from '../../types'
 
 type RoleFilter = 'all' | TextureMapRole
@@ -49,14 +49,6 @@ const ROLE_LABEL: Record<TextureMapRole, string> = {
   unknown: 'Sin clasificar',
 }
 
-function briefToast(msg: string) {
-  useAppStore.getState().setToast(msg)
-  window.setTimeout(() => {
-    if (useAppStore.getState().toastMessage === msg) {
-      useAppStore.getState().setToast(null)
-    }
-  }, 2400)
-}
 
 export function TexturesPanel() {
   const hasModel = useAppStore((s) => s.hasModel)
@@ -290,7 +282,7 @@ export function TexturesPanel() {
       updateStatsFromSession()
       await refreshInventory()
       markDirty()
-      briefToast(`Aplicado a ${n} textura(s)`)
+      showToast(`Aplicado a ${n} textura(s)`)
     } catch (err) {
       useAppStore
         .getState()
@@ -309,14 +301,14 @@ export function TexturesPanel() {
     if (!ok) return
     await withDoc(async (doc) => {
       const n = await compressAllTextures(doc, encodeFormat, quality)
-      briefToast(`Comprimidas: ${n}`)
+      showToast(`Comprimidas: ${n}`)
       return String(n)
     })
   }
 
   async function onRemoveUnused() {
     if (unusedCount === 0) {
-      briefToast('No hay texturas sin uso')
+      showToast('No hay texturas sin uso')
       return
     }
     const ok = await askConfirm({
@@ -328,7 +320,7 @@ export function TexturesPanel() {
     if (!ok) return
     await withDoc(async (doc) => {
       const n = removeUnusedTextures(doc)
-      briefToast(`Eliminadas: ${n}`)
+      showToast(`Eliminadas: ${n}`)
       return String(n)
     })
   }
@@ -363,7 +355,7 @@ export function TexturesPanel() {
         (t.width < t.originalWidth || t.height < t.originalHeight),
     ).length
     if (downsized === 0) {
-      briefToast('Ninguna textura está redimensionada')
+      showToast('Ninguna textura está redimensionada')
       return
     }
     const ok = await askConfirm({
@@ -385,7 +377,7 @@ export function TexturesPanel() {
       updateStatsFromSession()
       await refreshInventory()
       markDirty()
-      briefToast(`Restauradas: ${n}`)
+      showToast(`Restauradas: ${n}`)
     } finally {
       setBusy(false)
     }
@@ -420,25 +412,16 @@ export function TexturesPanel() {
 
   if (!hasModel) {
     return (
-      <>
-        <div className="tools-panel__header">
-          <h1>Texturas</h1>
-        </div>
-        <div className="tools-panel__body">
-          <p className="muted">Importa un modelo para inspeccionar texturas.</p>
-        </div>
-      </>
+      <PanelShell title="Texturas">
+        <p className="muted">Importa un modelo para inspeccionar texturas.</p>
+      </PanelShell>
     )
   }
 
   const estDelta = reductionPercent(estimate.current, estimate.estimated)
 
   return (
-    <>
-      <div className="tools-panel__header">
-        <h1>Texturas</h1>
-      </div>
-      <div className="tools-panel__body">
+    <PanelShell title="Texturas">
         <Field label="Máx. al redimensionar (px)">
           <div className="row" style={{ alignItems: 'stretch' }}>
             <NumberInput
@@ -507,7 +490,7 @@ export function TexturesPanel() {
           </div>
         </div>
 
-        <div className="stack" style={{ marginBottom: 10 }}>
+        <div className="stack mb-3">
           <button
             type="button"
             className="btn btn--block"
@@ -527,7 +510,7 @@ export function TexturesPanel() {
           </button>
         </div>
 
-        <div className="axis-toggles" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
+        <div className="chip-group mb-3" style={{ flexWrap: 'wrap' }}>
           {ROLE_FILTERS.map((f) => (
             <button
               key={f.id}
@@ -673,107 +656,83 @@ export function TexturesPanel() {
             </div>
           )}
         </Section>
-      </div>
 
-      {infoTexture &&
-        createPortal(
-          <div
-            className="modal-backdrop"
-            role="presentation"
-            onClick={() => setInfoTexture(null)}
-          >
-            <div
-              className="modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="texture-info-title"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="modal__header">
-                <h2 id="texture-info-title">Textura</h2>
-                <button
-                  type="button"
-                  className="btn btn--icon"
-                  aria-label="Cerrar"
-                  onClick={() => setInfoTexture(null)}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-              <div className="modal__body">
-                <dl className="texture-info-dl">
-                  <dt>Nombre</dt>
-                  <dd>{infoTexture.name || '—'}</dd>
-                  <dt>UUID</dt>
-                  <dd>
-                    <code>{infoTexture.uuid}</code>
-                  </dd>
-                  <dt>Resolución</dt>
-                  <dd>
-                    {infoTexture.width}×{infoTexture.height}
-                    {infoTexture.originalWidth &&
-                    infoTexture.originalHeight &&
-                    (infoTexture.width !== infoTexture.originalWidth ||
-                      infoTexture.height !== infoTexture.originalHeight)
-                      ? ` (original ${infoTexture.originalWidth}×${infoTexture.originalHeight})`
-                      : ''}
-                  </dd>
-                  <dt>Formato</dt>
-                  <dd>{infoTexture.format || '—'}</dd>
-                  <dt>MIME</dt>
-                  <dd>{infoTexture.mimeType || '—'}</dd>
-                  <dt>Tamaño</dt>
-                  <dd>
-                    {formatBytes(infoTexture.sizeBytes)}{' '}
-                    <Badge>
-                      {infoTexture.sizeConfidence === 'exact' ? 'exacto' : 'estimado'}
-                    </Badge>
-                  </dd>
-                  <dt>Roles</dt>
-                  <dd>
-                    {infoTexture.roles.length
-                      ? infoTexture.roles.map((r) => ROLE_LABEL[r] ?? r).join(', ')
-                      : '—'}
-                  </dd>
-                  <dt>Estado</dt>
-                  <dd>{infoTexture.active ? 'Activa' : 'Eliminada'}</dd>
-                  <dt>Usos</dt>
-                  <dd>
-                    {infoTexture.usages.length === 0
-                      ? 'Sin uso en materiales'
-                      : `${infoTexture.usages.length} material${infoTexture.usages.length === 1 ? '' : 'es'}`}
-                  </dd>
-                </dl>
-                {infoTexture.usages.length > 0 && (
-                  <ul className="texture-info-usages">
-                    {infoTexture.usages.map((u, i) => (
-                      <li key={`${u.materialUuid}-${u.slot}-${i}`}>
-                        <strong>{u.materialName || 'Material sin nombre'}</strong>
-                        <div className="dim">
-                          Slot: {u.slot} · Rol: {ROLE_LABEL[u.role] ?? u.role}
-                        </div>
-                        {u.objectNames.length > 0 && (
-                          <div className="dim">
-                            Objetos: {u.objectNames.slice(0, 12).join(', ')}
-                            {u.objectNames.length > 12
-                              ? ` (+${u.objectNames.length - 12})`
-                              : ''}
-                          </div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="modal__footer modal__footer--actions">
-                <button type="button" className="btn btn--primary" onClick={() => setInfoTexture(null)}>
-                  Cerrar
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body,
+      <AppModal
+        open={!!infoTexture}
+        onClose={() => setInfoTexture(null)}
+        title="Textura"
+        footer={
+          <button type="button" className="btn btn--primary" onClick={() => setInfoTexture(null)}>
+            Cerrar
+          </button>
+        }
+      >
+        {infoTexture && (
+          <>
+            <dl className="texture-info-dl">
+              <dt>Nombre</dt>
+              <dd>{infoTexture.name || '—'}</dd>
+              <dt>UUID</dt>
+              <dd>
+                <code>{infoTexture.uuid}</code>
+              </dd>
+              <dt>Resolución</dt>
+              <dd>
+                {infoTexture.width}×{infoTexture.height}
+                {infoTexture.originalWidth &&
+                infoTexture.originalHeight &&
+                (infoTexture.width !== infoTexture.originalWidth ||
+                  infoTexture.height !== infoTexture.originalHeight)
+                  ? ` (original ${infoTexture.originalWidth}×${infoTexture.originalHeight})`
+                  : ''}
+              </dd>
+              <dt>Formato</dt>
+              <dd>{infoTexture.format || '—'}</dd>
+              <dt>MIME</dt>
+              <dd>{infoTexture.mimeType || '—'}</dd>
+              <dt>Tamaño</dt>
+              <dd>
+                {formatBytes(infoTexture.sizeBytes)}{' '}
+                <Badge>
+                  {infoTexture.sizeConfidence === 'exact' ? 'exacto' : 'estimado'}
+                </Badge>
+              </dd>
+              <dt>Roles</dt>
+              <dd>
+                {infoTexture.roles.length
+                  ? infoTexture.roles.map((r) => ROLE_LABEL[r] ?? r).join(', ')
+                  : '—'}
+              </dd>
+              <dt>Estado</dt>
+              <dd>{infoTexture.active ? 'Activa' : 'Eliminada'}</dd>
+              <dt>Usos</dt>
+              <dd>
+                {infoTexture.usages.length === 0
+                  ? 'Sin uso en materiales'
+                  : `${infoTexture.usages.length} material${infoTexture.usages.length === 1 ? '' : 'es'}`}
+              </dd>
+            </dl>
+            {infoTexture.usages.length > 0 && (
+              <ul className="texture-info-usages">
+                {infoTexture.usages.map((u, i) => (
+                  <li key={`${u.materialUuid}-${u.slot}-${i}`}>
+                    <strong>{u.materialName || 'Material sin nombre'}</strong>
+                    <div className="dim">
+                      Slot: {u.slot} · Rol: {ROLE_LABEL[u.role] ?? u.role}
+                    </div>
+                    {u.objectNames.length > 0 && (
+                      <div className="dim">
+                        Objetos: {u.objectNames.slice(0, 12).join(', ')}
+                        {u.objectNames.length > 12 ? ` (+${u.objectNames.length - 12})` : ''}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
+      </AppModal>
 
       {preview && (
         <div
@@ -833,6 +792,6 @@ export function TexturesPanel() {
           </div>
         </div>
       )}
-    </>
+    </PanelShell>
   )
 }

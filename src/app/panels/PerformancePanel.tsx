@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
-import { Section, Field, NumberInput, Select, Badge } from '../../components/ui'
+import { Section, Field, NumberInput, Select, Badge, PanelShell, Stat } from '../../components/ui'
 import { analyzePerformance, budgetChecklist, describeOps } from '../../performance/analyzePerformance'
 import { formatBytes, formatNumber, formatPercent, reductionPercent } from '../../utils/format'
 import type { OptimizationOpId, OptimizationSettings } from '../../types'
-import { runOptimization, settingsToSteps } from '../../optimization/runOptimization'
-import { extractTextureInventory } from '../../textures/extractTextures'
-import { getModelSession } from '../../store/modelSession'
-
-/** Texturas se gestionan en su panel; no se auto-aplican desde Rendimiento. */
-const HIDDEN_FROM_PERF = new Set<OptimizationOpId>(['textureResize', 'textureCompress'])
+import { settingsToSteps } from '../../optimization/runOptimization'
+import {
+  applyOptimizationResult,
+  HIDDEN_FROM_PERF,
+  showToast,
+} from '../../optimization/optimizationActions'
 
 export function PerformancePanel() {
   const stats = useAppStore((s) => s.stats)
@@ -23,12 +23,6 @@ export function PerformancePanel() {
   const optimization = useAppStore((s) => s.optimization)
   const setOptimization = useAppStore((s) => s.setOptimization)
   const isOptimizing = useAppStore((s) => s.isOptimizing)
-  const setIsOptimizing = useAppStore((s) => s.setIsOptimizing)
-  const pushConsole = useAppStore((s) => s.pushConsole)
-  const reloadViewerFromWorking = useAppStore((s) => s.reloadViewerFromWorking)
-  const setTextures = useAppStore((s) => s.setTextures)
-  const setToast = useAppStore((s) => s.setToast)
-  const appliedOps = useAppStore((s) => s.appliedOps)
   const originalStats = useAppStore((s) => s.originalStats)
   const [applyingId, setApplyingId] = useState<string | null>(null)
 
@@ -70,7 +64,7 @@ export function PerformancePanel() {
     const runnable = ops.filter((id) => !HIDDEN_FROM_PERF.has(id))
     if (runnable.length === 0) {
       setActivePanel('textures')
-      setToast('Estas alertas se resuelven en el panel Texturas')
+      showToast('Estas alertas se resuelven en el panel Texturas')
       return
     }
     const nextSettings = buildSettingsWithOps(runnable)
@@ -78,8 +72,6 @@ export function PerformancePanel() {
     setActivePanel('optimization')
     setOptimizationFocusOp(runnable[0])
     setApplyingId(alertId)
-    setIsOptimizing(true)
-    pushConsole({ level: 'info', message: `▶ Aplicar sugeridas: ${runnable.join(', ')}` })
     try {
       const steps = settingsToSteps({
         ...nextSettings,
@@ -88,41 +80,24 @@ export function PerformancePanel() {
           enabled: runnable.includes(o.id),
         })),
       })
-      const result = await runOptimization(
-        nextSettings,
+      const result = await applyOptimizationResult({
+        settings: nextSettings,
         steps,
-        {
-          onLog: (level, message, details) => pushConsole({ level, message, details }),
-        },
-        'working',
-        appliedOps,
-      )
-      useAppStore.setState({
-        stats: result.stats,
-        optimizedSizeBytes: result.glb.byteLength,
-        appliedOps: result.appliedOps,
-        saveState: { ...useAppStore.getState().saveState, dirty: true },
+        base: 'working',
+        label: `Aplicar sugeridas: ${runnable.join(', ')}`,
       })
-      await reloadViewerFromWorking()
-      const session = getModelSession()
-      if (session?.document) {
-        setTextures(await extractTextureInventory(session.document))
-      }
       const orig = originalStats?.fileSizeBytes ?? result.glb.byteLength
-      setToast(
+      showToast(
         `Aplicado · ${formatBytes(orig)} → ${formatBytes(result.glb.byteLength)} (${formatPercent(reductionPercent(orig, result.glb.byteLength))})`,
       )
-      pushConsole({
+      useAppStore.getState().pushConsole({
         level: 'success',
         message: 'Sugerencias aplicadas',
         durationMs: result.durationMs,
       })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      pushConsole({ level: 'error', message })
-      useAppStore.getState().setError(message)
+    } catch {
+      /* error ya manejado */
     } finally {
-      setIsOptimizing(false)
       setApplyingId(null)
     }
   }
@@ -148,43 +123,26 @@ export function PerformancePanel() {
   }
 
   return (
-    <>
-      <div className="tools-panel__header">
-        <h1>Rendimiento</h1>
-      </div>
-      <div className="tools-panel__body">
+    <PanelShell title="Rendimiento">
         {!stats ? (
           <p className="muted">Importa un modelo para analizar rendimiento.</p>
         ) : (
           <>
             <Section title="Métricas">
               <div className="stat-grid">
-                <div className="stat-item">
-                  <div className="stat-item__label">Archivo</div>
-                  <div className="stat-item__value">{formatBytes(fileSize ?? 0)}</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-item__label">Triángulos</div>
-                  <div className="stat-item__value">{formatNumber(stats.triangles.value)}</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-item__label">Vértices</div>
-                  <div className="stat-item__value">{formatNumber(stats.vertices.value)}</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-item__label">Draw calls</div>
-                  <div className="stat-item__value">
-                    {formatNumber(stats.drawCalls.value)}
-                    <div className="stat-item__meta">
-                      {stats.drawCalls.confidence === 'exact' ? 'medidos' : 'pendiente'}
-                    </div>
-                  </div>
-                </div>
+                <Stat label="Archivo" value={formatBytes(fileSize ?? 0)} />
+                <Stat label="Triángulos" value={formatNumber(stats.triangles.value)} />
+                <Stat label="Vértices" value={formatNumber(stats.vertices.value)} />
+                <Stat
+                  label="Draw calls"
+                  value={formatNumber(stats.drawCalls.value)}
+                  meta={stats.drawCalls.confidence === 'exact' ? 'medidos' : 'pendiente'}
+                />
               </div>
             </Section>
 
             <Section title="Presupuesto (defaults web)">
-              <div className="row" style={{ marginBottom: 8 }}>
+              <div className="row mb-2">
                 <button type="button" className="btn" onClick={() => applyWebDefaults('mobile')}>
                   Default móvil
                 </button>
@@ -247,7 +205,7 @@ export function PerformancePanel() {
                 />
               </Field>
 
-              <div className="stack" style={{ marginTop: 8 }}>
+              <div className="stack mt-2">
                 {checklist.map((c) => (
                   <div key={c.label} className="row">
                     <Badge tone={c.ok ? 'ok' : 'err'}>{c.ok ? 'OK' : 'NO'}</Badge>
@@ -306,7 +264,6 @@ export function PerformancePanel() {
             </Section>
           </>
         )}
-      </div>
-    </>
+    </PanelShell>
   )
 }

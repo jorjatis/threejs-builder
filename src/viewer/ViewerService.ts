@@ -105,7 +105,10 @@ export class ViewerService {
   }
   private resumeTimer: ReturnType<typeof setTimeout> | null = null
   private userInteracting = false
+  /** Render bajo demanda: solo dibuja si hay cambios o animación/órbita activa. */
+  private renderDirty = true
   private gltfLoader: GLTFLoader
+  private dracoLoader: DRACOLoader
   private currentObjectUrl: string | null = null
   private perspectiveCamera: PerspectiveCamera
   private orthographicCamera: OrthographicCamera
@@ -139,11 +142,22 @@ export class ViewerService {
     this.scene.add(this.helpersRoot)
     this.scene.background = new Color('#1a1a1e')
 
-    const draco = new DRACOLoader()
-    draco.setDecoderPath(`${import.meta.env.BASE_URL}draco/`)
+    this.dracoLoader = new DRACOLoader()
+    this.dracoLoader.setDecoderPath(`${import.meta.env.BASE_URL}draco/`)
     this.gltfLoader = new GLTFLoader()
-    this.gltfLoader.setDRACOLoader(draco)
+    this.gltfLoader.setDRACOLoader(this.dracoLoader)
     this.gltfLoader.setMeshoptDecoder(MeshoptDecoder)
+  }
+
+  /** Marca el frame como sucio y asegura el bucle RAF si hace falta. */
+  invalidate(): void {
+    this.renderDirty = true
+    this.scheduleRender()
+  }
+
+  private scheduleRender(): void {
+    if (!this.running || !this.renderer || this.raf) return
+    this.raf = requestAnimationFrame(this.tick)
   }
 
   setCallbacks(cb: ViewerCallbacks): void {
@@ -178,6 +192,7 @@ export class ViewerService {
     controls.screenSpacePanning = true
     controls.addEventListener('start', this.onControlsStart)
     controls.addEventListener('end', this.onControlsEnd)
+    controls.addEventListener('change', this.onControlsChange)
     this.controls = controls
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
@@ -193,6 +208,7 @@ export class ViewerService {
     if (this.controls) {
       this.controls.removeEventListener('start', this.onControlsStart)
       this.controls.removeEventListener('end', this.onControlsEnd)
+      this.controls.removeEventListener('change', this.onControlsChange)
       this.controls.dispose()
       this.controls = null
     }
@@ -212,6 +228,7 @@ export class ViewerService {
 
   private onControlsStart = () => {
     this.userInteracting = true
+    this.invalidate()
     if (this.resumeTimer) {
       clearTimeout(this.resumeTimer)
       this.resumeTimer = null
@@ -220,50 +237,81 @@ export class ViewerService {
 
   private onControlsEnd = () => {
     this.userInteracting = false
+    this.invalidate()
     if (this.autoRotate.enabled && this.autoRotate.pauseOnInteract) {
       if (this.resumeTimer) clearTimeout(this.resumeTimer)
       this.resumeTimer = setTimeout(() => {
         this.resumeTimer = null
+        this.invalidate()
       }, this.autoRotate.resumeDelayMs)
     }
     this.emitCameraChange()
+  }
+
+  private onControlsChange = () => {
+    // Solo marcar sucio: no re-agendar aquí si ya hay un tick en curso
+    // (controls.update() dispara 'change' a mitad de frame → doble RAF = tirones).
+    this.renderDirty = true
+    this.scheduleRender()
   }
 
   private emitCameraChange(): void {
     this.callbacks.onCameraChange?.(this.captureLiveCameraPatch())
   }
 
+  private isAutoRotating(): boolean {
+    return (
+      this.autoRotate.enabled &&
+      !(this.autoRotate.pauseOnInteract && this.userInteracting) &&
+      !this.resumeTimer
+    )
+  }
+
+  private tick = (): void => {
+    // No poner raf=0 al inicio: evita que 'change' de OrbitControls encole un 2.º RAF.
+    if (!this.running || !this.renderer) {
+      this.raf = 0
+      return
+    }
+
+    const dt = this.clock.getDelta()
+    this.mixer?.update(dt)
+
+    const rotating = this.isAutoRotating()
+    let controlsMoving = false
+    if (this.controls) {
+      this.controls.autoRotate = rotating
+      this.controls.autoRotateSpeed = this.autoRotate.speed * this.autoRotate.direction * 2
+      // true mientras damping / autoRotate siguen moviendo la cámara
+      controlsMoving = this.controls.update()
+    }
+
+    const continuous =
+      rotating || this.userInteracting || controlsMoving || !!this.resumeTimer || !!this.mixer
+
+    if (this.showLightHelpers && (this.renderDirty || continuous)) {
+      for (const helper of this.lightHelpers.values()) {
+        helper.update()
+      }
+    }
+
+    if (this.renderDirty || continuous) {
+      this.renderer.render(this.scene, this.camera)
+      this.renderDirty = false
+    }
+
+    if (continuous || this.renderDirty) {
+      this.raf = requestAnimationFrame(this.tick)
+    } else {
+      this.raf = 0
+    }
+  }
+
   start(): void {
     if (this.running) return
     this.running = true
     this.clock.start()
-    const tick = () => {
-      if (!this.running) return
-      this.raf = requestAnimationFrame(tick)
-      const dt = this.clock.getDelta()
-      this.mixer?.update(dt)
-
-      if (this.controls) {
-        const rotating =
-          this.autoRotate.enabled &&
-          !(this.autoRotate.pauseOnInteract && this.userInteracting) &&
-          !this.resumeTimer
-        this.controls.autoRotate = rotating
-        this.controls.autoRotateSpeed = this.autoRotate.speed * this.autoRotate.direction * 2
-        this.controls.update()
-      }
-
-      if (this.showLightHelpers) {
-        for (const helper of this.lightHelpers.values()) {
-          helper.update()
-        }
-      }
-
-      if (this.renderer) {
-        this.renderer.render(this.scene, this.camera)
-      }
-    }
-    tick()
+    this.invalidate()
   }
 
   stop(): void {
@@ -291,6 +339,7 @@ export class ViewerService {
       this.camera.bottom = -frustum
       this.camera.updateProjectionMatrix()
     }
+    this.invalidate()
   }
 
   async loadGlb(
@@ -355,6 +404,7 @@ export class ViewerService {
     const measured = measureSceneDrawCalls(root)
     this.callbacks.onStatsMeasured?.(measured)
     this.callbacks.onLoadProgress?.(1, 'Listo')
+    this.invalidate()
     return root
   }
 
@@ -632,6 +682,7 @@ export class ViewerService {
       this.grid.dispose()
       this.grid = null
     }
+    this.invalidate()
   }
 
   setAxes(show: boolean): void {
@@ -653,11 +704,13 @@ export class ViewerService {
       this.axes.dispose()
       this.axes = null
     }
+    this.invalidate()
   }
 
   setWireframe(enabled: boolean): void {
     this.wireframe = enabled
     this.applyWireframe(enabled)
+    this.invalidate()
   }
 
   isWireframe(): boolean {
@@ -681,6 +734,7 @@ export class ViewerService {
     this.showVertices = enabled
     if (enabled) this.rebuildVerticesOverlay()
     else this.clearVerticesOverlay()
+    this.invalidate()
   }
 
   isShowVertices(): boolean {
@@ -821,6 +875,7 @@ export class ViewerService {
 
   applyAutoRotate(cfg: AutoRotateConfig, reducedMotion = false): void {
     this.autoRotate = reducedMotion ? { ...cfg, enabled: false } : { ...cfg }
+    this.invalidate()
   }
 
   syncEditorLights(lights: EditorLight[]): void {
@@ -857,12 +912,14 @@ export class ViewerService {
       }
       this.syncLightHelper(def.id, light, def)
     }
+    this.invalidate()
   }
 
   setShowLightHelpers(show: boolean): void {
     this.showLightHelpers = show
     if (!show) {
       this.clearLightHelpers()
+      this.invalidate()
       return
     }
     for (const [id, light] of this.editorLights) {
@@ -877,6 +934,7 @@ export class ViewerService {
         source: 'editor',
       })
     }
+    this.invalidate()
   }
 
   getShowLightHelpers(): boolean {
@@ -1019,29 +1077,7 @@ export class ViewerService {
     this.applyAutoRotate(config.autoRotate, config.interaction.reducedMotion)
     this.syncEditorLights(config.lights)
     this.applyModelTransform(config.modelScale, config.modelPosition, config.modelRotation)
-  }
-
-  /** Aplica cambios parciales sin mover la cámara salvo que se pida. */
-  patchScene(config: SceneConfig, changed: (keyof SceneConfig)[], opts?: { moveCamera?: boolean }): void {
-    if (changed.includes('environment')) this.applyEnvironment(config.environment)
-    if (changed.includes('camera')) {
-      this.applyCameraConfig(config.camera, { moveCamera: opts?.moveCamera === true })
-    }
-    if (changed.includes('interaction')) {
-      this.applyInteraction(config.interaction)
-      this.applyAutoRotate(config.autoRotate, config.interaction.reducedMotion)
-    }
-    if (changed.includes('autoRotate')) {
-      this.applyAutoRotate(config.autoRotate, config.interaction.reducedMotion)
-    }
-    if (changed.includes('lights')) this.syncEditorLights(config.lights)
-    if (
-      changed.includes('modelScale') ||
-      changed.includes('modelPosition') ||
-      changed.includes('modelRotation')
-    ) {
-      this.applyModelTransform(config.modelScale, config.modelPosition, config.modelRotation)
-    }
+    this.invalidate()
   }
 
   getCamera(): Camera {
@@ -1128,6 +1164,7 @@ export class ViewerService {
     this.editorLights.clear()
     this.setGrid(false)
     this.setAxes(false)
+    this.dracoLoader.dispose()
   }
 }
 

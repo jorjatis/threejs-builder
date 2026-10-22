@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type {
   ExportSettings,
+  OptimizationOpId,
   OptimizationSettings,
   SceneConfig,
   PerformanceBudget,
@@ -19,11 +20,13 @@ export interface StoredProject {
   originalGlb: ArrayBuffer
   workingGlb: ArrayBuffer
   originalSizeBytes: number
+  /** Tamaño del working GLB (evita leer el buffer al listar). */
+  workingSizeBytes: number
   optimization: OptimizationSettings
   scene: SceneConfig
   exportSettings: ExportSettings
   budget: PerformanceBudget
-  appliedOps: string[]
+  appliedOps: OptimizationOpId[]
   pipelineSource: string
   /** Miniatura JPEG del visor al guardar (data URL). */
   thumbnailDataUrl?: string | null
@@ -37,8 +40,36 @@ export interface StoredProject {
   activeGlobalPresetId?: string | null
 }
 
+/** Metadatos ligeros para listados (sin ArrayBuffers). */
+export interface ProjectListItem {
+  id: string
+  name: string
+  normalizedName: string
+  createdAt: number
+  modifiedAt: number
+  fileName: string
+  originalSizeBytes: number
+  workingSizeBytes: number
+  thumbnailDataUrl: string | null
+}
+
 export function normalizeProjectName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function toListItem(project: StoredProject): ProjectListItem {
+  return {
+    id: project.id,
+    name: project.name,
+    normalizedName: normalizeProjectName(project.name),
+    createdAt: project.createdAt,
+    modifiedAt: project.modifiedAt,
+    fileName: project.fileName,
+    originalSizeBytes: project.originalSizeBytes,
+    workingSizeBytes:
+      project.workingSizeBytes ?? project.workingGlb?.byteLength ?? project.originalSizeBytes,
+    thumbnailDataUrl: project.thumbnailDataUrl ?? null,
+  }
 }
 
 interface BuilderDB extends DBSchema {
@@ -47,76 +78,79 @@ interface BuilderDB extends DBSchema {
     value: StoredProject
     indexes: { 'by-modified': number }
   }
+  projectMeta: {
+    key: string
+    value: ProjectListItem
+    indexes: { 'by-modified': number; 'by-name': string }
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<BuilderDB>> | null = null
 
 function getDb() {
   if (!dbPromise) {
-    dbPromise = openDB<BuilderDB>('threejs-builder', 1, {
-      upgrade(db) {
-        const store = db.createObjectStore('projects', { keyPath: 'id' })
-        store.createIndex('by-modified', 'modifiedAt')
+    dbPromise = openDB<BuilderDB>('threejs-builder', 2, {
+      async upgrade(db, oldVersion, _newVersion, transaction) {
+        if (oldVersion < 1) {
+          const store = db.createObjectStore('projects', { keyPath: 'id' })
+          store.createIndex('by-modified', 'modifiedAt')
+        }
+        if (oldVersion < 2) {
+          const meta = db.createObjectStore('projectMeta', { keyPath: 'id' })
+          meta.createIndex('by-modified', 'modifiedAt')
+          meta.createIndex('by-name', 'normalizedName')
+
+          // Migrar metadatos desde proyectos existentes (incluye buffers en esta pasada única).
+          const projectStore = transaction.objectStore('projects')
+          let cursor = await projectStore.openCursor()
+          while (cursor) {
+            const project = cursor.value as StoredProject
+            const workingSizeBytes =
+              project.workingSizeBytes ?? project.workingGlb?.byteLength ?? project.originalSizeBytes
+            if (project.workingSizeBytes == null) {
+              await cursor.update({ ...project, workingSizeBytes })
+            }
+            await transaction.objectStore('projectMeta').put(
+              toListItem({ ...project, workingSizeBytes }),
+            )
+            cursor = await cursor.continue()
+          }
+        }
       },
     })
   }
   return dbPromise
 }
 
-export async function listProjects(): Promise<
-  Pick<
-    StoredProject,
-    | 'id'
-    | 'name'
-    | 'createdAt'
-    | 'modifiedAt'
-    | 'fileName'
-    | 'originalSizeBytes'
-    | 'thumbnailDataUrl'
-  >[]
-> {
+export async function listProjects(): Promise<ProjectListItem[]> {
   const db = await getDb()
-  const all = await db.getAllFromIndex('projects', 'by-modified')
-  return all
-    .reverse()
-    .map(
-      ({
-        id,
-        name,
-        createdAt,
-        modifiedAt,
-        fileName,
-        originalSizeBytes,
-        workingGlb,
-        thumbnailDataUrl,
-      }) => ({
-        id,
-        name,
-        createdAt,
-        modifiedAt,
-        fileName,
-        originalSizeBytes: workingGlb?.byteLength ?? originalSizeBytes,
-        thumbnailDataUrl: thumbnailDataUrl ?? null,
-      }),
-    )
+  const all = await db.getAllFromIndex('projectMeta', 'by-modified')
+  return all.reverse()
 }
 
-/** Busca un proyecto por nombre (sin distinguir mayúsculas/espacios). */
-export async function findProjectByName(name: string): Promise<StoredProject | null> {
+/** Busca un proyecto por nombre (sin distinguir mayúsculas/espacios). Devuelve metadatos + id. */
+export async function findProjectByName(name: string): Promise<ProjectListItem | null> {
   const key = normalizeProjectName(name)
   if (!key) return null
   const db = await getDb()
-  const all = await db.getAll('projects')
-  return all.find((p) => normalizeProjectName(p.name) === key) ?? null
+  const matches = await db.getAllFromIndex('projectMeta', 'by-name', key)
+  return matches[0] ?? null
 }
 
 export async function saveProject(project: StoredProject): Promise<void> {
   if (project.schemaVersion !== SCHEMA) {
     throw new Error(`Versión de esquema incompatible: ${project.schemaVersion}`)
   }
+  const withSize: StoredProject = {
+    ...project,
+    workingSizeBytes: project.workingGlb.byteLength,
+  }
   try {
     const db = await getDb()
-    await db.put('projects', project)
+    const tx = db.transaction(['projects', 'projectMeta'], 'readwrite')
+    await tx.objectStore('projects').put(withSize)
+    await tx.objectStore('projectMeta').put(toListItem(withSize))
+    await tx.done
   } catch (err) {
     const name = err instanceof DOMException ? err.name : ''
     if (name === 'QuotaExceededError') {
@@ -142,7 +176,10 @@ export async function loadProject(id: string): Promise<StoredProject> {
 
 export async function deleteProject(id: string): Promise<void> {
   const db = await getDb()
-  await db.delete('projects', id)
+  const tx = db.transaction(['projects', 'projectMeta'], 'readwrite')
+  await tx.objectStore('projects').delete(id)
+  await tx.objectStore('projectMeta').delete(id)
+  await tx.done
 }
 
 export async function duplicateProject(id: string, newName: string): Promise<StoredProject> {
@@ -153,6 +190,7 @@ export async function duplicateProject(id: string, newName: string): Promise<Sto
     name: newName,
     createdAt: Date.now(),
     modifiedAt: Date.now(),
+    workingSizeBytes: src.workingGlb.byteLength,
     originalGlb: src.originalGlb.slice(0),
     workingGlb: src.workingGlb.slice(0),
     removedTextures: src.removedTextures?.map((t) => ({

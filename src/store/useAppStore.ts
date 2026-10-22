@@ -70,7 +70,6 @@ interface AppState {
   pipelineSource: string
   consoleEntries: ConsoleEntry[]
   isOptimizing: boolean
-  cancelOptimization: boolean
   appliedOps: OptimizationOpId[]
   scene: SceneConfig
   scenePresets: ScenePreset[]
@@ -132,9 +131,6 @@ interface AppState {
   updateStatsFromSession: () => void
   setOptimizedSize: (bytes: number | null) => void
   setIsOptimizing: (v: boolean) => void
-  requestCancelOptimization: () => void
-  resetCancelFlag: () => void
-  getSession: () => ModelSession | null
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -157,7 +153,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   pipelineSource: DEFAULT_PIPELINE_SOURCE,
   consoleEntries: [],
   isOptimizing: false,
-  cancelOptimization: false,
   appliedOps: [],
   scene: (() => {
     const scene = createDefaultSceneConfig()
@@ -462,9 +457,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAlerts: (alerts) => set({ alerts }),
   setOptimizedSize: (bytes) => set({ optimizedSizeBytes: bytes }),
   setIsOptimizing: (v) => set({ isOptimizing: v }),
-  requestCancelOptimization: () => set({ cancelOptimization: true }),
-  resetCancelFlag: () => set({ cancelOptimization: false }),
-  getSession: () => getModelSession(),
 
   updateStatsFromSession: () => {
     const session = getModelSession()
@@ -551,14 +543,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
 
       if (extractedLights.length > 0) {
-        get().setToast(
+        const { showToast } = await import('../optimization/optimizationActions')
+        showToast(
           `Importadas ${extractedLights.length} luz(ces) del modelo. Puedes ajustarlas en Escena.`,
+          4000,
         )
-        window.setTimeout(() => {
-          if (get().toastMessage?.startsWith('Importadas')) {
-            get().setToast(null)
-          }
-        }, 4000)
       }
 
     } catch (err) {

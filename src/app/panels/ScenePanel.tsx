@@ -11,6 +11,7 @@ import {
   Switch,
   ColorInput,
   InfoTip,
+  PanelShell,
 } from '../../components/ui'
 import { getViewerService } from '../../viewer/ViewerService'
 import { createDefaultSceneConfig } from '../../scene-config/defaults'
@@ -22,6 +23,7 @@ import { extractPunctualLights, mergeImportedLights } from '../../model/extractL
 import { getModelSession } from '../../store/modelSession'
 import type { EditorLight, LightKind } from '../../types'
 import { createId } from '../../utils/id'
+import { showToast } from '../../optimization/optimizationActions'
 
 const RAD2DEG = 180 / Math.PI
 const DEG2RAD = Math.PI / 180
@@ -124,7 +126,6 @@ export function ScenePanel() {
   const scene = useAppStore((s) => s.scene)
   const setScene = useAppStore((s) => s.setScene)
   const syncCameraFromViewer = useAppStore((s) => s.syncCameraFromViewer)
-  const setToast = useAppStore((s) => s.setToast)
   const hasModel = useAppStore((s) => s.hasModel)
   const scenePresets = useAppStore((s) => s.scenePresets)
   const activePresetId = useAppStore((s) => s.activePresetId)
@@ -221,7 +222,8 @@ export function ScenePanel() {
   function patchCamera(partial: Partial<typeof scene.camera>) {
     // Solo el parcial: si se manda toda la cámara, el store cree que position/target
     // cambiaron y reposiciona el visor (Near/Far/velocidades no deben mover nada).
-    setScene({ camera: partial })
+    // El store hace merge profundo de camera; el cast evita exigir CameraConfig completo.
+    setScene({ camera: partial as typeof scene.camera })
   }
 
   function resetCameraField<K extends keyof typeof scene.camera>(key: K) {
@@ -246,22 +248,17 @@ export function ScenePanel() {
   function reimportLightsFromModel() {
     const session = getModelSession()
     if (!session?.document) {
-      setToast('No hay modelo cargado.')
+      showToast('No hay modelo cargado.')
       return
     }
     const extracted = extractPunctualLights(session.document)
     setScene({ lights: mergeImportedLights(scene.lights, extracted) })
-    setToast(
+    showToast(
       extracted.length > 0
         ? `Importadas ${extracted.length} luz(ces) del GLB.`
         : 'Este modelo no trae luces KHR_lights_punctual.',
+      3500,
     )
-    window.setTimeout(() => {
-      const msg = useAppStore.getState().toastMessage
-      if (msg?.startsWith('Importadas') || msg?.startsWith('Este modelo')) {
-        useAppStore.getState().setToast(null)
-      }
-    }, 3500)
   }
 
   function onToggleLightHelpers(v: boolean) {
@@ -300,7 +297,7 @@ export function ScenePanel() {
       : undefined
 
     setScene({
-      ...(cameraRest ? { camera: cameraRest } : {}),
+      ...(cameraRest ? { camera: cameraRest as typeof scene.camera } : {}),
       ...(cfg.interaction ? { interaction: cfg.interaction } : {}),
       ...(cfg.autoRotate ? { autoRotate: cfg.autoRotate } : {}),
       ...(cfg.environment ? { environment: cfg.environment } : {}),
@@ -309,20 +306,11 @@ export function ScenePanel() {
     if (cfg.camera && hasModel) {
       applyDefaultFraming()
     }
-    setToast(`Preset «${preset.name}» aplicado.`)
-    window.setTimeout(() => {
-      if (useAppStore.getState().toastMessage?.startsWith('Preset «')) {
-        useAppStore.getState().setToast(null)
-      }
-    }, 2800)
+    showToast(`Preset «${preset.name}» aplicado.`, 2800)
   }
 
   return (
-    <>
-      <div className="tools-panel__header">
-        <h1>Escena</h1>
-      </div>
-      <div className="tools-panel__body">
+    <PanelShell title="Escena">
         {!hasModel && <p className="muted">Puedes ajustar la escena sin modelo cargado.</p>}
 
         <Section title="Configuración">
@@ -340,7 +328,7 @@ export function ScenePanel() {
           }
           defaultOpen={false}
         >
-          <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
+          <p className="muted mt-0 mb-2">
             Atajos de cámara, interacción y auto-rotación. El encuadre se adapta al modelo.
           </p>
           <div className="preset-list">
@@ -594,16 +582,9 @@ export function ScenePanel() {
                 syncCameraFromViewer()
                 // Marcar dirty por si sync no detectó cambio numérico (redondeo)
                 useAppStore.getState().markDirty()
-                setToast(
+                showToast(
                   'Encuadre guardado en el proyecto. Guarda el proyecto para conservarlo al reabrir.',
                 )
-                window.setTimeout(() => {
-                  if (
-                    useAppStore.getState().toastMessage?.startsWith('Encuadre guardado')
-                  ) {
-                    useAppStore.getState().setToast(null)
-                  }
-                }, 3200)
               }}
             >
               <Aperture size={14} aria-hidden />
@@ -667,7 +648,7 @@ export function ScenePanel() {
                 Rotación
                 <InfoTip text="Orbitar alrededor del modelo. Ratón: clic izquierdo + arrastrar. Táctil: un dedo. Horizontal / Vertical limitan el eje." />
               </div>
-              <div className="axis-toggles">
+              <div className="chip-group">
                 <button
                   type="button"
                   className={`btn btn--chip${scene.interaction.enableHorizontal ? ' btn--active' : ''}`}
@@ -732,7 +713,7 @@ export function ScenePanel() {
               {!scene.interaction.enableHorizontal &&
                 !scene.interaction.enableVertical &&
                 scene.interaction.enableRotate && (
-                  <p className="dim" style={{ marginTop: 4 }}>
+                  <p className="dim mt-1">
                     Sin eje activo: la rotación se apaga.
                   </p>
                 )}
@@ -972,7 +953,7 @@ export function ScenePanel() {
               Del GLB
             </button>
           </div>
-          <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
+          <p className="muted mt-0 mb-2">
             Añade luces desde ángulos distintos o importa las del modelo. Al importar un GLB con
             luces, aparecen solas aquí.
           </p>
@@ -1170,7 +1151,7 @@ export function ScenePanel() {
         </Collapse>
 
         <Collapse title="Transformación del modelo">
-          <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
+          <p className="muted mt-0 mb-2">
             Solo afecta al visor y al export del embed. No modifica el GLB ni las texturas.
           </p>
           <Field
@@ -1235,7 +1216,6 @@ export function ScenePanel() {
             Restablecer transform
           </button>
         </Collapse>
-      </div>
-    </>
+    </PanelShell>
   )
 }

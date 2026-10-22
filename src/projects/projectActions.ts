@@ -22,6 +22,8 @@ import {
   serializeRemovedTexturesForJson,
   type StoredRemovedTexture,
 } from '../textures/removedTexturesPersist'
+import { showToast } from '../optimization/optimizationActions'
+import type { OptimizationOpId } from '../types'
 
 /** Restaura la escena y el encuadre guardados (sin re-fit que los pise). */
 function restoreProjectScene(viewer: ViewerService, scene: SceneConfig): void {
@@ -89,6 +91,7 @@ export async function saveCurrentProject(): Promise<void> {
       originalGlb: session.originalGlb,
       workingGlb: session.workingGlb,
       originalSizeBytes: session.originalSizeBytes,
+      workingSizeBytes: session.workingGlb.byteLength,
       optimization: latest.optimization,
       scene: latest.scene,
       exportSettings: latest.exportSettings,
@@ -112,14 +115,8 @@ export async function saveCurrentProject(): Promise<void> {
         error: null,
       },
       projectsRevision: s.projectsRevision + 1,
-      toastMessage: `Guardado: ${project.name}`,
     }))
-    window.setTimeout(() => {
-      const cur = useAppStore.getState().toastMessage
-      if (cur?.startsWith('Guardado:')) {
-        useAppStore.getState().setToast(null)
-      }
-    }, 2800)
+    showToast(`Guardado: ${project.name}`, 2800)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al guardar'
     useAppStore.setState({
@@ -162,14 +159,6 @@ export async function openProject(id: string): Promise<void> {
     const activeTextures = await extractTextureInventory(document)
     const textures = mergeActiveAndRemovedTextures(activeTextures, removedTextures)
 
-    const originalSize =
-      project.originalSizeBytes || project.originalGlb.byteLength || 0
-    const originalDoc = await readDocumentFromBuffer(project.originalGlb)
-    const originalStats = inspectDocument(originalDoc, {
-      fileName: project.fileName,
-      fileSizeBytes: originalSize,
-      format: project.format,
-    })
     const stats = inspectDocument(document, {
       fileName: project.fileName,
       fileSizeBytes: project.workingGlb.byteLength,
@@ -184,10 +173,11 @@ export async function openProject(id: string): Promise<void> {
       scene: project.scene,
       exportSettings: { ...project.exportSettings, fileName: project.name },
       budget: project.budget,
-      appliedOps: project.appliedOps as never,
+      appliedOps: project.appliedOps,
       pipelineSource: project.pipelineSource,
       textures,
-      originalStats,
+      // Stats del original en idle para no bloquear la apertura
+      originalStats: stats,
       stats,
       optimizedSizeBytes: project.workingGlb.byteLength,
       activePresetId: project.activePresetId ?? null,
@@ -196,6 +186,27 @@ export async function openProject(id: string): Promise<void> {
       saveState: { dirty: false, lastSavedAt: project.modifiedAt, saving: false, error: null },
       loadProgress: { active: false, message: '', ratio: null },
     })
+
+    const originalSize =
+      project.originalSizeBytes || project.originalGlb.byteLength || 0
+    const originalGlb = project.originalGlb
+    const fileName = project.fileName
+    const format = project.format
+    const computeOriginal = () => {
+      void readDocumentFromBuffer(originalGlb).then((originalDoc) => {
+        const originalStats = inspectDocument(originalDoc, {
+          fileName,
+          fileSizeBytes: originalSize,
+          format,
+        })
+        useAppStore.setState({ originalStats })
+      })
+    }
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => computeOriginal(), { timeout: 2500 })
+    } else {
+      setTimeout(computeOriginal, 0)
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'No se pudo abrir el proyecto'
     useAppStore.setState({
@@ -261,7 +272,7 @@ export async function importPortableProject(file: File): Promise<void> {
     scene: StoredProject['scene']
     exportSettings: StoredProject['exportSettings']
     budget: StoredProject['budget']
-    appliedOps: string[]
+    appliedOps: OptimizationOpId[]
     pipelineSource: string
     removedTextures?: StoredRemovedTexture[]
     activePresetId?: string | null
@@ -313,7 +324,7 @@ export async function importPortableProject(file: File): Promise<void> {
     scene: meta.scene,
     exportSettings: { ...meta.exportSettings, fileName: meta.name },
     budget: meta.budget,
-    appliedOps: meta.appliedOps as never,
+    appliedOps: meta.appliedOps,
     pipelineSource: meta.pipelineSource,
     textures,
     originalStats,

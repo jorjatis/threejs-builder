@@ -7,7 +7,7 @@ import {
   MIN_PARAGRAPHS,
 } from '../../editorial/lorem'
 import { ARTICLE_PREVIEW_SIZES } from '../../editorial/previewSizes'
-import { Section, Field, Switch, NumberInput, Select } from '../../components/ui'
+import { Section, Field, Switch, NumberInput, Select, PanelShell } from '../../components/ui'
 
 const PREVIEW_WIDTHS: { value: ArticlePreviewWidth; label: string; hint: string; icon: typeof Monitor }[] =
   [
@@ -53,11 +53,7 @@ export function EditorialPanel() {
   const c = scene.container
 
   return (
-    <>
-      <div className="tools-panel__header">
-        <h1>Editorial</h1>
-      </div>
-      <div className="tools-panel__body">
+    <PanelShell title="Editorial">
         <Section title="Previsualización">
           <button
             type="button"
@@ -67,13 +63,13 @@ export function EditorialPanel() {
             <Newspaper size={14} />
             {viewerMode === 'editorial' ? 'Volver al visor 3D' : 'Ver como artículo en el visor'}
           </button>
-          <p className="dim" style={{ marginTop: 6 }}>
+          <p className="dim mt-2">
             Mock de página ABC (cabecera, columna 609px y pie). Nada es clicable.
           </p>
         </Section>
 
         <Section title="Ancho del visor">
-          <p className="muted" style={{ marginBottom: 8 }}>
+          <p className="muted mb-2">
             Simula el tamaño del artículo para comprobar el responsive del mock.
           </p>
           <div className="article-preview-widths" role="group" aria-label="Ancho del visor">
@@ -191,13 +187,13 @@ export function EditorialPanel() {
               </div>
             </div>
           </div>
-          <p className="muted" style={{ marginTop: 8 }}>
+          <p className="muted mt-2">
             En la vista artículo se muestra «Cargando modelo 3D…» hasta que el embed está listo.
           </p>
         </Section>
 
         <Section title="Contenedor web">
-          <p className="muted" style={{ marginBottom: 8 }}>
+          <p className="muted mb-2">
             Define el tamaño CSS del bloque 3D dentro del artículo. Se refleja al instante en la
             vista artículo del visor.
           </p>
@@ -341,12 +337,11 @@ export function EditorialPanel() {
               </Select>
             </div>
           </Field>
-          <p className="muted" style={{ marginTop: 4 }}>
+          <p className="muted mt-1">
             Fondo = entorno. Unidades relativas al mock: <strong>vh</strong> / <strong>vw
             marco</strong> = marco del artículo; <strong>% columna</strong> = columna ~609px.
           </p>
         </Section>
-      </div>
-    </>
+    </PanelShell>
   )
 }

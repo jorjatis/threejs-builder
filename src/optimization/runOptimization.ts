@@ -1,8 +1,9 @@
 import type { PipelineStep, OptimizationSettings, OptimizationOpId, ModelStats } from '../types'
-import { cloneDocumentFromGlb, writeDocumentToGlb } from '../model/gltfIo'
+import { cloneDocumentFromGlb, writeDocumentToGlb, readDocumentFromBuffer } from '../model/gltfIo'
 import { inspectDocument } from '../model/inspectModel'
 import { CANONICAL_OP_ORDER, runPipelineOnDocument, type OpContext } from './operations'
 import { getModelSession, updateWorkingGlb } from '../store/modelSession'
+import { canRunPipelineInWorker, runPipelineInWorker } from './worker/runPipelineInWorker'
 
 export interface OptimizationResult {
   glb: ArrayBuffer
@@ -98,21 +99,36 @@ export async function runOptimization(
   }
 
   ctx.onLog?.('info', `Base: ${base} · Pipeline: ${steps.map((s) => s.op).join(' → ')}`)
-  const document = await cloneDocumentFromGlb(sourceGlb)
 
-  await runPipelineOnDocument(document, steps, {
+  const pipelineCtx: OpContext = {
     ...ctx,
     maxTextureSize: settings.maxTextureSize,
     simplifyRatio: settings.simplifyRatio,
     simplifyError: settings.simplifyError,
     textureFormat: settings.textureFormat,
-  })
-
-  if (ctx.signal?.aborted) {
-    throw new DOMException('Operación cancelada', 'AbortError')
   }
 
-  const glb = await writeDocumentToGlb(document)
+  let glb: ArrayBuffer
+  let document
+
+  if (canRunPipelineInWorker(steps)) {
+    ctx.onLog?.('debug', 'Ejecutando pipeline en Web Worker…')
+    // Copia para transferir sin vaciar el buffer de la sesión
+    const sourceCopy = sourceGlb.slice(0)
+    glb = await runPipelineInWorker(sourceCopy, steps, settings, pipelineCtx)
+    if (ctx.signal?.aborted) {
+      throw new DOMException('Operación cancelada', 'AbortError')
+    }
+    document = await readDocumentFromBuffer(glb)
+  } else {
+    document = await cloneDocumentFromGlb(sourceGlb)
+    await runPipelineOnDocument(document, steps, pipelineCtx)
+    if (ctx.signal?.aborted) {
+      throw new DOMException('Operación cancelada', 'AbortError')
+    }
+    glb = await writeDocumentToGlb(document)
+  }
+
   updateWorkingGlb(glb, document)
 
   const stats = inspectDocument(document, {
@@ -134,11 +150,3 @@ export async function runOptimization(
   }
 }
 
-/** @deprecated usar runOptimization */
-export async function runOptimizationFromOriginal(
-  settings: OptimizationSettings,
-  stepsOverride: PipelineStep[] | null,
-  ctx: OpContext,
-): Promise<OptimizationResult> {
-  return runOptimization(settings, stepsOverride, ctx, 'original')
-}

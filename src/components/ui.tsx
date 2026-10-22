@@ -4,7 +4,7 @@ import type {
   SelectHTMLAttributes,
   ChangeEvent,
 } from 'react'
-import { Info, ChevronDown, Plus, Minus, RotateCcw } from 'lucide-react'
+import { Info, ChevronDown, Plus, Minus, RotateCcw, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { formatColorAlpha, parseColorAlpha } from '../utils/colorAlpha'
@@ -428,4 +428,161 @@ export function Badge({
             ? 'badge badge--info'
             : 'badge'
   return <span className={cls}>{children}</span>
+}
+
+/** Cabecera + cuerpo estándar de los paneles laterales. */
+export function PanelShell({
+  title,
+  children,
+  headerExtra,
+}: {
+  title: ReactNode
+  children: ReactNode
+  headerExtra?: ReactNode
+}) {
+  return (
+    <>
+      <div className="tools-panel__header">
+        <h1>{title}</h1>
+        {headerExtra}
+      </div>
+      <div className="tools-panel__body">{children}</div>
+    </>
+  )
+}
+
+export function Stat({
+  label,
+  value,
+  meta,
+}: {
+  label: string
+  value: string
+  meta?: string
+}) {
+  return (
+    <div className="stat-item">
+      <div className="stat-item__label">{label}</div>
+      <div className="stat-item__value">{value}</div>
+      {meta ? <div className="stat-item__meta">{meta}</div> : null}
+    </div>
+  )
+}
+
+/** Tabs / segmented control (Optimización, filtros, etc.). */
+export function SegmentedControl<T extends string>({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: { id: T; label: ReactNode }[]
+  ariaLabel?: string
+}) {
+  return (
+    <div className="tabs" role="tablist" aria-label={ariaLabel}>
+      {options.map((opt) => (
+        <button
+          key={opt.id}
+          type="button"
+          role="tab"
+          aria-selected={value === opt.id}
+          className={value === opt.id ? 'active' : undefined}
+          onClick={() => onChange(opt.id)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+type ModalSize = 'sm' | 'md' | 'lg' | 'console' | 'pipeline'
+
+/** Modal con backdrop, Escape y clic fuera. */
+export function AppModal({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+  size = 'md',
+  role = 'dialog',
+  labelledBy,
+  className,
+  bodyClassName,
+  footerClassName = 'modal__footer modal__footer--actions',
+  hideClose,
+}: {
+  open: boolean
+  onClose: () => void
+  title: ReactNode
+  children: ReactNode
+  footer?: ReactNode
+  size?: ModalSize
+  role?: 'dialog' | 'alertdialog'
+  labelledBy?: string
+  className?: string
+  bodyClassName?: string
+  footerClassName?: string
+  hideClose?: boolean
+}) {
+  const titleId = useId()
+  const labelId = labelledBy ?? titleId
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  const sizeClass =
+    size === 'sm'
+      ? 'modal--sm'
+      : size === 'lg'
+        ? 'modal--lg'
+        : size === 'console'
+          ? 'modal--console'
+          : size === 'pipeline'
+            ? 'modal--pipeline'
+            : ''
+
+  return createPortal(
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className={`modal${sizeClass ? ` ${sizeClass}` : ''}${className ? ` ${className}` : ''}`}
+        role={role}
+        aria-modal="true"
+        aria-labelledby={labelId}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="modal__header">
+          <h2 id={labelId}>{title}</h2>
+          {!hideClose ? (
+            <button
+              type="button"
+              className="btn btn--icon"
+              aria-label="Cerrar"
+              onClick={onClose}
+            >
+              <X size={15} />
+            </button>
+          ) : null}
+        </div>
+        <div className={`modal__body${bodyClassName ? ` ${bodyClassName}` : ''}`}>{children}</div>
+        {footer != null ? <div className={footerClassName}>{footer}</div> : null}
+      </div>
+    </div>,
+    document.body,
+  )
 }

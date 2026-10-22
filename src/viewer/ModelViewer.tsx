@@ -103,7 +103,11 @@ export function ModelViewer() {
   const hasModel = useAppStore((s) => s.hasModel)
   const loadProgress = useAppStore((s) => s.loadProgress)
   const importFiles = useAppStore((s) => s.importFiles)
-  const scene = useAppStore((s) => s.scene)
+  const showGrid = useAppStore((s) => s.scene.environment.showGrid)
+  const showAxes = useAppStore((s) => s.scene.environment.showAxes)
+  const envBackground = useAppStore((s) => s.scene.environment.background)
+  const container = useAppStore((s) => s.scene.container)
+  const editorialCfg = useAppStore((s) => s.scene.editorial)
   const setScene = useAppStore((s) => s.setScene)
   const setError = useAppStore((s) => s.setError)
   const originalStats = useAppStore((s) => s.originalStats)
@@ -134,12 +138,13 @@ export function ModelViewer() {
   const stageRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const editorial = viewerMode === 'editorial'
-  const lazyLoad = editorial && (scene.editorial.lazyLoad ?? false)
+  const lazyLoad = editorial && (editorialCfg.lazyLoad ?? false)
 
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
     const viewer = getViewerService()
+    let cameraSyncTimer: ReturnType<typeof setTimeout> | null = null
     viewer.setCallbacks({
       onContextLost: () =>
         setError('Se perdió el contexto WebGL. Recarga la página o libera memoria del navegador.'),
@@ -154,12 +159,21 @@ export function ModelViewer() {
         })
       },
       onCameraChange: () => {
-        useAppStore.getState().syncCameraFromViewer()
+        if (cameraSyncTimer) clearTimeout(cameraSyncTimer)
+        cameraSyncTimer = setTimeout(() => {
+          cameraSyncTimer = null
+          useAppStore.getState().syncCameraFromViewer()
+        }, 150)
       },
     })
     viewer.mount(el)
     viewer.applySceneConfig(useAppStore.getState().scene, { moveCamera: true })
     useAppStore.getState().syncCameraFromViewer()
+    return () => {
+      if (cameraSyncTimer) clearTimeout(cameraSyncTimer)
+      viewer.setCallbacks({})
+      viewer.unmount()
+    }
   }, [setError])
 
   useEffect(() => {
@@ -171,11 +185,11 @@ export function ModelViewer() {
     frameSize.w,
     frameSize.h,
     contentWidthPx,
-    scene.container.widthValue,
-    scene.container.widthUnit,
-    scene.container.heightValue,
-    scene.container.heightUnit,
-    scene.container.preset,
+    container.widthValue,
+    container.widthUnit,
+    container.heightValue,
+    container.heightUnit,
+    container.preset,
   ])
 
   // Medir marco (vw/vh) y columna de contenido (% ancho), no el viewport del navegador.
@@ -282,10 +296,10 @@ export function ModelViewer() {
   const originalSize = originalStats?.fileSizeBytes ?? 0
   const currentSize = optimizedSize ?? stats?.fileSizeBytes ?? 0
   const reduction = originalSize > 0 ? reductionPercent(originalSize, currentSize) : 0
-  const ed = scene.editorial
-  const c = scene.container
+  const ed = editorialCfg
+  const c = container
 
-  const envBg = scene.environment.background
+  const envBg = envBackground
   const previewSize = getArticlePreviewSize(articlePreviewWidth)
   // Siempre el ancho/alto medidos del marco (si el padre es más estrecho que el preset).
   const frameW = Math.max(1, frameSize.w)
@@ -453,25 +467,23 @@ export function ModelViewer() {
             <div className="viewer-toolbar__row" role="group" aria-label="Ver el modelo">
               <button
                 type="button"
-                className={`btn btn--icon${scene.environment.showGrid ? ' btn--active' : ''}`}
+                className={`btn btn--icon${showGrid ? ' btn--active' : ''}`}
                 title="Cuadrícula"
-                onClick={() =>
-                  setScene({
-                    environment: { ...scene.environment, showGrid: !scene.environment.showGrid },
-                  })
-                }
+                onClick={() => {
+                  const env = useAppStore.getState().scene.environment
+                  setScene({ environment: { ...env, showGrid: !showGrid } })
+                }}
               >
                 <Grid3x3 size={14} />
               </button>
               <button
                 type="button"
-                className={`btn btn--icon${scene.environment.showAxes ? ' btn--active' : ''}`}
+                className={`btn btn--icon${showAxes ? ' btn--active' : ''}`}
                 title="Ejes"
-                onClick={() =>
-                  setScene({
-                    environment: { ...scene.environment, showAxes: !scene.environment.showAxes },
-                  })
-                }
+                onClick={() => {
+                  const env = useAppStore.getState().scene.environment
+                  setScene({ environment: { ...env, showAxes: !showAxes } })
+                }}
               >
                 <Axis3d size={14} />
               </button>

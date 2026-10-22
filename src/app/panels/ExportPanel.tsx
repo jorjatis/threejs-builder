@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Save } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { Section, Field, TextInput, Select, Switch, Badge } from '../../components/ui'
+import { Section, Field, TextInput, Select, Switch, Badge, PanelShell } from '../../components/ui'
 import { getModelSession } from '../../store/modelSession'
 import { exportModelDocument, triggerDownload } from '../../export/exportModel'
 import { generateJsModule } from '../../export/generateJsModule'
@@ -93,11 +93,7 @@ export function ExportPanel() {
   }
 
   return (
-    <>
-      <div className="tools-panel__header">
-        <h1>Exportación</h1>
-      </div>
-      <div className="tools-panel__body">
+    <PanelShell title="Exportación">
         {!hasModel && <p className="muted">Importa y (opcionalmente) optimiza un modelo primero.</p>}
 
         <Section title="Opciones generales">
@@ -147,12 +143,12 @@ export function ExportPanel() {
               <option value="standalone">B — Escena independiente</option>
             </Select>
           </Field>
-          <p className="muted" style={{ marginBottom: 8 }}>
+          <p className="muted mb-2">
             {settings.jsMode === 'integrate'
               ? 'No crea renderer ni rAF propios. Expone createModelScene({ scene, camera, ... }).'
               : 'Crea renderer, cámara y controles. Expone createModelViewer(container, config).'}
           </p>
-          <p className="dim" style={{ marginBottom: 8 }}>
+          <p className="dim mb-2">
             Dependencias: {modulePreview.dependencies.join(', ')}
           </p>
           <div className="stack">
@@ -173,11 +169,11 @@ export function ExportPanel() {
             </button>
           </div>
           {generatedCode && (
-            <pre className="code-preview" style={{ marginTop: 8 }}>
+            <pre className="code-preview mt-2">
               {generatedCode}
             </pre>
           )}
-          <details style={{ marginTop: 8 }}>
+          <details className="mt-2">
             <summary className="muted">Vista previa de INTEGRATION.md</summary>
             <pre className="code-preview">{modulePreview.instructions}</pre>
           </details>
@@ -222,7 +218,6 @@ export function ExportPanel() {
         </Section>
 
         {status && <p className="muted">{status}</p>}
-      </div>
-    </>
+    </PanelShell>
   )
 }

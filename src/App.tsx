@@ -6,7 +6,6 @@ import { ProjectsModal } from './app/ProjectsModal'
 import { AppDialogs } from './components/AppDialogs'
 import { ModelViewer } from './viewer/ModelViewer'
 import { useAppStore } from './store/useAppStore'
-import { getGltfIO } from './model/gltfIo'
 import { saveCurrentProject } from './projects/projectActions'
 
 export default function App() {
@@ -15,10 +14,6 @@ export default function App() {
   const toastMessage = useAppStore((s) => s.toastMessage)
   const setToast = useAppStore((s) => s.setToast)
   const sidebarExpanded = useAppStore((s) => s.sidebarExpanded)
-
-  useEffect(() => {
-    void getGltfIO()
-  }, [])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {

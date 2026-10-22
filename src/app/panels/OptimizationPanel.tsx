@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import Editor from '@monaco-editor/react'
 import { Expand, WandSparkles, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import {
@@ -12,14 +11,21 @@ import {
   NumberInput,
   Select,
   Collapse,
+  PanelShell,
+  SegmentedControl,
 } from '../../components/ui'
 import {
   OPERATIONS,
   pipelineOrderWarnings,
   sortPipelineSteps,
 } from '../../optimization/operations'
-import { runOptimization, settingsToSteps } from '../../optimization/runOptimization'
+import { settingsToSteps } from '../../optimization/runOptimization'
 import type { OptimizationBase } from '../../optimization/runOptimization'
+import {
+  applyOptimizationResult,
+  cancelRunningOptimization,
+  HIDDEN_SIMPLE_OPS,
+} from '../../optimization/optimizationActions'
 import { detectManualTextureEdits, getOpRelevance } from '../../optimization/opRelevance'
 import {
   estimateLabel,
@@ -34,8 +40,9 @@ import {
 } from '../../optimization/presets'
 import { formatBytes, formatDuration, formatPercent, reductionPercent } from '../../utils/format'
 import type { OptimizationOpId, PipelineDefinition, PipelineStep } from '../../types'
-import { extractTextureInventory } from '../../textures/extractTextures'
 import { getModelSession } from '../../store/modelSession'
+
+const MonacoEditor = lazy(() => import('@monaco-editor/react'))
 
 const CATEGORY_LABEL: Record<string, string> = {
   geometry: 'Geometría',
@@ -43,9 +50,6 @@ const CATEGORY_LABEL: Record<string, string> = {
   textures: 'Texturas',
   compression: 'Compresión',
 }
-
-/** Texturas → panel Texturas. Palette → solo avanzado (riesgo visual). */
-const HIDDEN_SIMPLE_OPS = new Set(['textureResize', 'textureCompress', 'palette'])
 
 const LOG_LEVEL_LABEL: Record<string, string> = {
   info: 'Info',
@@ -112,19 +116,15 @@ export function OptimizationPanel() {
   const pushConsole = useAppStore((s) => s.pushConsole)
   const clearConsole = useAppStore((s) => s.clearConsole)
   const isOptimizing = useAppStore((s) => s.isOptimizing)
-  const setIsOptimizing = useAppStore((s) => s.setIsOptimizing)
-  const requestCancel = useAppStore((s) => s.requestCancelOptimization)
-  const resetCancel = useAppStore((s) => s.resetCancelFlag)
   const hasModel = useAppStore((s) => s.hasModel)
   const originalStats = useAppStore((s) => s.originalStats)
   const stats = useAppStore((s) => s.stats)
   const optimizedSize = useAppStore((s) => s.optimizedSizeBytes)
-  const reloadViewerFromWorking = useAppStore((s) => s.reloadViewerFromWorking)
   const restoreOriginal = useAppStore((s) => s.restoreOriginal)
-  const setTextures = useAppStore((s) => s.setTextures)
   const textures = useAppStore((s) => s.textures)
   const askConfirm = useAppStore((s) => s.askConfirm)
-  const abortRef = useRef<AbortController | null>(null)
+  const uiTheme = useAppStore((s) => s.theme)
+  const monacoTheme = uiTheme === 'light' ? 'light' : 'vs-dark'
   const [logFilter, setLogFilter] = useState<'all' | 'info' | 'warn' | 'error' | 'success'>('all')
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false)
   const activePresetId = useAppStore((s) => s.activeOptimizationPresetId)
@@ -240,71 +240,24 @@ export function OptimizationPanel() {
     settingsOverride?: typeof optimization,
   ) {
     if (!hasModel) return
-    abortRef.current?.abort()
-    const ac = new AbortController()
-    abortRef.current = ac
-    resetCancel()
-    setIsOptimizing(true)
-    pushConsole({ level: 'info', message: `▶ ${label}` })
-
     try {
-      const settings = settingsOverride ?? optimization
-      let resolved = steps
-      if (resolved == null) {
-        const all = settingsToSteps(settings)
-        if (base === 'working') {
-          const pending = all.filter((s) => !appliedOps.includes(s.op))
-          resolved = pending.length > 0 ? pending : all
-          if (pending.length === 0 && all.length > 0) {
-            pushConsole({
-              level: 'warn',
-              message: 'Todas las ops ya estaban aplicadas; se reaplican sobre el modelo actual.',
-            })
-          }
-        } else {
-          resolved = all
-        }
-      }
-      const result = await runOptimization(
-        settings,
-        resolved,
-        {
-          signal: ac.signal,
-          onLog: (level, message, details) => pushConsole({ level, message, details }),
-        },
+      const result = await applyOptimizationResult({
+        settings: settingsOverride ?? optimization,
+        steps,
         base,
-        base === 'working' ? appliedOps : undefined,
-      )
-
-      useAppStore.setState({
-        stats: result.stats,
-        optimizedSizeBytes: result.glb.byteLength,
-        appliedOps: result.appliedOps,
-        saveState: { ...useAppStore.getState().saveState, dirty: true },
+        label,
       })
-
-      await reloadViewerFromWorking()
-      const session = getModelSession()
-      if (session?.document) {
-        setTextures(await extractTextureInventory(session.document))
-      }
-
       pushConsole({
         level: 'success',
-        message: `Pipeline finalizado`,
+        message: 'Pipeline finalizado',
         durationMs: result.durationMs,
         details: `${formatBytes(originalSize)} → ${formatBytes(result.glb.byteLength)} (${formatPercent(reductionPercent(originalSize, result.glb.byteLength))})`,
       })
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        pushConsole({ level: 'warn', message: 'Optimización cancelada. Se conserva la última versión válida.' })
-      } else {
-        const message = err instanceof Error ? err.message : String(err)
-        pushConsole({ level: 'error', message })
-        useAppStore.getState().setError(message)
+      // Abort y errores ya se registran en applyOptimizationResult
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        /* setError ya aplicado */
       }
-    } finally {
-      setIsOptimizing(false)
     }
   }
 
@@ -599,19 +552,16 @@ export function OptimizationPanel() {
   )
 
   return (
-    <>
-      <div className="tools-panel__header">
-        <h1>Optimización</h1>
-      </div>
-      <div className="tools-panel__body">
-        <div className="tabs">
-          <button type="button" className={mode === 'simple' ? 'active' : ''} onClick={() => setMode('simple')}>
-            Sencillo
-          </button>
-          <button type="button" className={mode === 'advanced' ? 'active' : ''} onClick={() => setMode('advanced')}>
-            Avanzado
-          </button>
-        </div>
+    <PanelShell title="Optimización">
+        <SegmentedControl
+          ariaLabel="Modo de optimización"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { id: 'simple', label: 'Sencillo' },
+            { id: 'advanced', label: 'Avanzado' },
+          ]}
+        />
 
         {!hasModel && <p className="muted">Importa un modelo para optimizar.</p>}
 
@@ -625,7 +575,7 @@ export function OptimizationPanel() {
             }
             defaultOpen={false}
           >
-            <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
+            <p className="muted mt-0 mb-2">
               Atajos según el objetivo. Configuran las ops y pueden aplicarse desde el original.
             </p>
             <div className="preset-list">
@@ -658,7 +608,7 @@ export function OptimizationPanel() {
               </div>
             )}
 
-            <p className="muted" style={{ marginTop: 0 }}>
+            <p className="muted mt-0">
               Resize y compresión de texturas están en el panel <strong>Texturas</strong>. Aquí solo
               geometría, materiales y compresión de mallas.
             </p>
@@ -741,7 +691,7 @@ export function OptimizationPanel() {
               </Section>
             ))}
 
-            <p className="muted" style={{ marginTop: 4 }}>
+            <p className="muted mt-1">
               Activar aplica esa operación al instante. Desactivar reconstruye desde el original.
             </p>
 
@@ -759,7 +709,7 @@ export function OptimizationPanel() {
               </div>
             )}
 
-            <div className="stack" style={{ marginTop: 12 }}>
+            <div className="stack mt-3">
               <button
                 type="button"
                 className="btn btn--primary"
@@ -779,10 +729,7 @@ export function OptimizationPanel() {
                 <button
                   type="button"
                   className="btn"
-                  onClick={() => {
-                    requestCancel()
-                    abortRef.current?.abort()
-                  }}
+                  onClick={() => cancelRunningOptimization()}
                 >
                   Cancelar
                 </button>
@@ -827,7 +774,7 @@ export function OptimizationPanel() {
             </div>
 
             <Collapse title="Referencia de operaciones (qué hace cada op)">
-              <p className="muted" style={{ marginTop: 0 }}>
+              <p className="muted mt-0">
                 «Añadir» inserta el paso una sola vez. Si ya está, puedes quitarlo.
               </p>
               <div className="stack">
@@ -866,7 +813,7 @@ export function OptimizationPanel() {
 
             <div className="field">
               <label>Editor del pipeline</label>
-              <p className="muted" style={{ margin: '0 0 8px' }}>
+              <p className="muted mt-0 mb-2">
                 Cambia <code>ratio</code>, <code>maxSize</code>, quita pasos del array o reordénalos.
                 El icono de ampliar abre la vista con operaciones al lado.
               </p>
@@ -881,22 +828,24 @@ export function OptimizationPanel() {
               >
                 <Expand size={14} />
               </button>
-              <Editor
-                height="240px"
-                defaultLanguage="json"
-                theme="vs-dark"
-                value={pipelineSource}
-                onChange={(v) => setPipelineSource(v ?? '')}
-                options={{
-                  minimap: { enabled: false },
-                  fontSize: 12,
-                  lineNumbers: 'on',
-                  scrollBeyondLastLine: false,
-                  wordWrap: 'on',
-                  tabSize: 2,
-                  automaticLayout: true,
-                }}
-              />
+              <Suspense fallback={<p className="muted">Cargando editor…</p>}>
+                <MonacoEditor
+                  height="240px"
+                  defaultLanguage="json"
+                  theme={monacoTheme}
+                  value={pipelineSource}
+                  onChange={(v) => setPipelineSource(v ?? '')}
+                  options={{
+                    minimap: { enabled: false },
+                    fontSize: 12,
+                    lineNumbers: 'on',
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'on',
+                    tabSize: 2,
+                    automaticLayout: true,
+                  }}
+                />
+              </Suspense>
             </div>
             {orderWarnings.length > 0 && (
               <div className="opt-callout opt-callout--warn" role="status">
@@ -944,10 +893,7 @@ export function OptimizationPanel() {
                 <button
                   type="button"
                   className="btn btn--block"
-                  onClick={() => {
-                    requestCancel()
-                    abortRef.current?.abort()
-                  }}
+                  onClick={() => cancelRunningOptimization()}
                 >
                   Cancelar
                 </button>
@@ -966,11 +912,11 @@ export function OptimizationPanel() {
 
         <div className="opt-console-block">
           <Section title="Consola del pipeline">
-            <p className="muted" style={{ marginTop: 0, marginBottom: 10 }}>
+            <p className="muted mt-0 mb-3">
               Registro de lo que hace cada paso al optimizar: inicio, avisos, errores y resultado
               (tamaños). Filtra por tipo si hay mucho ruido.
             </p>
-            <div className="row console-toolbar" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
+            <div className="row console-toolbar mb-3" style={{ flexWrap: 'wrap' }}>
               <Select
                 value={logFilter}
                 onChange={(e) => setLogFilter(e.target.value as typeof logFilter)}
@@ -1074,7 +1020,6 @@ export function OptimizationPanel() {
             </div>
           </div>
         </Section>
-      </div>
 
       {consoleModalOpen &&
         createPortal(
@@ -1102,7 +1047,7 @@ export function OptimizationPanel() {
                 </button>
               </div>
               <div className="modal__body console-modal__body">
-                <div className="row console-toolbar" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
+                <div className="row console-toolbar mb-3" style={{ flexWrap: 'wrap' }}>
                   <Select
                     value={logFilter}
                     onChange={(e) => setLogFilter(e.target.value as typeof logFilter)}
@@ -1236,22 +1181,24 @@ export function OptimizationPanel() {
                 </aside>
                 <div className="pipeline-modal__main">
                   <div className="pipeline-modal__editor">
-                    <Editor
-                      height="100%"
-                      defaultLanguage="json"
-                      theme="vs-dark"
-                      value={pipelineSource}
-                      onChange={(v) => setPipelineSource(v ?? '')}
-                      options={{
-                        minimap: { enabled: false },
-                        fontSize: 13,
-                        lineNumbers: 'on',
-                        scrollBeyondLastLine: false,
-                        wordWrap: 'on',
-                        tabSize: 2,
-                        automaticLayout: true,
-                      }}
-                    />
+                    <Suspense fallback={<p className="muted">Cargando editor…</p>}>
+                      <MonacoEditor
+                        height="100%"
+                        defaultLanguage="json"
+                        theme={monacoTheme}
+                        value={pipelineSource}
+                        onChange={(v) => setPipelineSource(v ?? '')}
+                        options={{
+                          minimap: { enabled: false },
+                          fontSize: 13,
+                          lineNumbers: 'on',
+                          scrollBeyondLastLine: false,
+                          wordWrap: 'on',
+                          tabSize: 2,
+                          automaticLayout: true,
+                        }}
+                      />
+                    </Suspense>
                   </div>
                 </div>
               </div>
@@ -1279,6 +1226,6 @@ export function OptimizationPanel() {
           </div>,
           document.body,
         )}
-    </>
+    </PanelShell>
   )
 }

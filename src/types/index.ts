@@ -325,13 +325,6 @@ export interface ExportSettings {
   includeReport: boolean
 }
 
-export interface ProjectMeta {
-  id: string
-  name: string
-  createdAt: number
-  modifiedAt: number
-  schemaVersion: number
-}
 
 export interface SaveState {
   dirty: boolean
